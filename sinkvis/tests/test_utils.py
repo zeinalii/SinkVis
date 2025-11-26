@@ -155,4 +155,3 @@ class TestSafeDivide:
         assert safe_divide(-10.0, 2.0) == -5.0
         assert safe_divide(10.0, -2.0) == -5.0
         assert safe_divide(-10.0, -2.0) == 5.0
-

@@ -114,4 +114,3 @@ def nan_attention():
         return attention / row_sums
 
     return _create
-

@@ -157,7 +157,9 @@ class TestSlidingWindow:
 
         mask = simulate_sliding_window(seq_len, window_size)
 
-        assert mask.sum() == window_size, f"Exactly {window_size} tokens should be kept"
+        assert (
+            mask.sum() == window_size
+        ), f"Exactly {window_size} tokens should be kept"
 
     def test_window_larger_than_sequence(self):
         """Window >= seq_len keeps all tokens."""
@@ -390,4 +392,3 @@ class TestApplyEvictionMask:
 
         assert result.device.type == "cuda"
         assert result.shape[-1] == 5
-

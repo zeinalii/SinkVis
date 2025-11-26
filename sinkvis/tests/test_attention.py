@@ -282,4 +282,3 @@ class TestGenerateCacheBlocks:
 
         assert sink_block.access_count > regular_block.access_count
         assert heavy_block.access_count > regular_block.access_count
-
