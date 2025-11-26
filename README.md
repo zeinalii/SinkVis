@@ -16,13 +16,37 @@ Modern techniques like **StreamingLLM** and **H2O** rely on **attention sinks** 
 
 SinkVis makes these mechanisms visible through interactive visualizations.
 
+## Repository Structure
+
+```
+SinkVis/
+├── py-package/           # Python package (sinkvis)
+│   └── sinkvis/
+│       ├── __init__.py   # Main SinkVis API
+│       ├── attention.py  # Attention pattern generation & analysis
+│       ├── eviction.py   # Eviction policy implementations
+│       ├── hooks.py      # PyTorch hooks for capturing attention
+│       ├── memory.py     # Memory profiling
+│       ├── models.py     # Data models
+│       ├── simulation.py # Vectorized simulation logic
+│       ├── utils.py      # Utility functions
+│       └── tests/        # Test suite
+├── apps/                 # Example applications & notebooks
+│   ├── README.md
+│   └── sinkvis_demo.ipynb
+└── basefiles/            # Configuration files
+    ├── README.md         # This file
+    ├── requirements.txt
+    ├── .flake8
+    └── .isort.cfg
+```
+
 ## Features
 
-### 🔴 Live Attention Streaming
-- Real-time attention heatmaps over the context window
-- Automatic sink and heavy hitter detection and highlighting
-- WebSocket-based streaming for low-latency updates
-- Configurable thresholds and update intervals
+### 🔴 Attention Capture
+- Real-time attention pattern capture via PyTorch hooks
+- Automatic sink and heavy hitter detection
+- Support for HuggingFace transformers
 
 ### ⚙️ Eviction Policy Simulation
 - Compare different cache eviction strategies:
@@ -32,15 +56,10 @@ SinkVis makes these mechanisms visible through interactive visualizations.
   - **H2O** (Heavy-Hitter Oracle)
   - **Full Cache** (no eviction, for baseline comparison)
 - Detailed metrics: hits, misses, evictions, retained sinks
-- Side-by-side policy comparison
 
-### 📊 Hierarchical Cache Profiling
-- Visualize where KV blocks reside in memory hierarchy:
-  - GPU HBM
-  - GPU L2 Cache
-  - System RAM
-  - Disk (offloaded)
-- Block-level details: size, access patterns, importance markers
+### 📊 Memory Profiling
+- GPU memory usage tracking
+- VRAM estimation per policy
 
 ## Installation
 
@@ -61,114 +80,54 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r basefiles/requirements.txt
 
-# Run the server
-python run.py
+# Add sinkvis to your Python path
+export PYTHONPATH="${PYTHONPATH}:$(pwd)/py-package"
 ```
-
-Open your browser to **http://localhost:8765**
 
 ## Usage
 
-### Live Attention Stream
+### Basic Usage
 
-1. Navigate to the **Live Stream** tab
-2. Click **Start** to begin streaming attention patterns
-3. Watch the heatmap update in real-time as tokens are processed
-4. Tokens highlighted in red are attention sinks, blue are heavy hitters
-5. Use **Step** for frame-by-frame analysis
+```python
+import sys
+sys.path.insert(0, "path/to/SinkVis/py-package")
 
-### Eviction Simulation
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from sinkvis import SinkVis
 
-1. Go to the **Eviction Sim** tab
-2. Enter a prompt in the text area
-3. Configure cache parameters:
-   - **Cache Size**: Maximum tokens to retain
-   - **Sink Count**: Number of initial sink tokens to preserve
-   - **Window Size**: For sliding window policies
-4. Click **Run Simulation** or **Compare All Policies**
+# Load model
+model = GPT2LMHeadModel.from_pretrained("gpt2")
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 
-### Cache Profile
-
-1. Select the **Cache Profile** tab
-2. Set the sequence length to analyze
-3. Click **Refresh** to generate the memory hierarchy visualization
-4. Hover over blocks to see detailed information
-
-## Project Structure
-
-```
-SinkVis/
-├── backend/
-│   ├── __init__.py
-│   ├── attention.py      # Attention pattern generation & analysis
-│   ├── eviction.py       # Eviction policy implementations
-│   ├── hf_loader.py      # HuggingFace model loading
-│   ├── models.py         # Pydantic data models
-│   ├── server.py         # FastAPI server
-│   └── tests/
-│       ├── test_attention.py
-│       ├── test_eviction.py
-│       └── test_server.py
-├── frontend/
-│   ├── index.html        # Main HTML page
-│   ├── styles.css        # Styling
-│   └── app.js            # Frontend application
-├── requirements.txt
-├── run.py                # Entry point
-└── README.md
+# Capture attention
+with SinkVis(model, tokenizer) as sv:
+    inputs = tokenizer("Hello world", return_tensors="pt")
+    outputs = model(**inputs, output_attentions=True)
+    
+    # Get attention data
+    attention_data = sv.get_attention_data(layer=-1, head=0)
+    
+    # Simulate eviction policy
+    keep_mask = sv.simulate_policy("streaming_llm", budget=20, sink_count=4)
 ```
 
-## API Endpoints
+### Running the Demo Notebook
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Serve main visualization page |
-| `/api/health` | GET | Health check |
-| `/api/simulate` | POST | Run eviction simulation |
-| `/api/compare` | POST | Compare all eviction policies |
-| `/api/cache-profile` | GET | Get cache profile snapshot |
-| `/api/models/search` | GET | Search HuggingFace models |
-| `/api/models/load` | POST | Load a model from HuggingFace |
-| `/api/models/generate` | POST | Generate text with loaded model |
-| `/ws/attention` | WebSocket | Live attention streaming |
-
-## Configuration
-
-### Stream Configuration
-
-```javascript
-{
-    "update_interval_ms": 200,    // Update frequency
-    "sink_threshold": 0.1,        // Threshold for sink detection
-    "heavy_hitter_threshold": 0.05 // Threshold for heavy hitter detection
-}
-```
-
-### Simulation Configuration
-
-```json
-{
-    "policy": "streaming_llm",
-    "cache_size": 2048,
-    "sink_count": 4,
-    "window_size": 1024,
-    "heavy_hitter_ratio": 0.1
-}
+```bash
+cd apps
+jupyter notebook sinkvis_demo.ipynb
 ```
 
 ## Running Tests
 
 ```bash
-# Run all tests
-pytest
+cd py-package
+pytest sinkvis/tests/ -v
 
 # Run with coverage
-pytest --cov=backend
-
-# Run specific test file
-pytest backend/tests/test_attention.py -v
+pytest sinkvis/tests/ --cov=sinkvis
 ```
 
 ## Background
@@ -194,3 +153,4 @@ MIT License — see LICENSE file for details.
 ---
 
 Built with ❤️ for understanding transformer attention
+
