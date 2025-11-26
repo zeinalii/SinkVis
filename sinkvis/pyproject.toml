@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sinkvis"
-version = "1.0.0"
+version = "1.0.2"
 description = "KV Cache Visualizer - Attention sink and eviction policy visualization for LLMs"
 readme = "README.md"
 license = {text = "MIT"}
