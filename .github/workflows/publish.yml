@@ -40,7 +40,7 @@ jobs:
 
       - name: Run tests
         working-directory: ./sinkvis
-        run: uv run pytest
+        run: uv run pytest sinkvis/tests
 
       - name: Build package
         working-directory: ./sinkvis
