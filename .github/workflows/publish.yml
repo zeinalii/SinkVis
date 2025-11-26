@@ -4,10 +4,10 @@ name: Publish to PyPI
 # Setup required: Configure PyPI trusted publishing at https://pypi.org/manage/account/publishing/
 # Alternative: Use PYPI_API_TOKEN secret if trusted publishing is not configured.
 
-on: [push]
-  # push:
-  #   branches:
-  #     - main
+on:
+  push:
+    branches:
+      - main
 
 jobs:
   publish:
