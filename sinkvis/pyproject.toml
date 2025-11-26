@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sinkvis"
+version = "1.0.0"
+description = "KV Cache Visualizer - Attention sink and eviction policy visualization for LLMs"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Amir Zeinali", email = "amir@bloom.new"}
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["attention", "transformer", "llm", "kv-cache", "visualization", "pytorch"]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+transformers = [
+    "transformers>=4.36.0",
+    "huggingface_hub>=0.20.0",
+    "accelerate>=0.25.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black",
+    "isort",
+    "flake8",
+]
+all = [
+    "sinkvis[transformers,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/SinkVis"
+Documentation = "https://github.com/yourusername/SinkVis#readme"
+Repository = "https://github.com/yourusername/SinkVis"
+Issues = "https://github.com/yourusername/SinkVis/issues"
+
+[tool.setuptools]
+packages = ["sinkvis", "sinkvis.tests"]
+package-dir = {"sinkvis" = ".", "sinkvis.tests" = "tests"}
+
+[tool.black]
+line-length = 86
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 86
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
