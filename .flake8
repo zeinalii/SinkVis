@@ -1,0 +1,7 @@
+[flake8]
+max-line-length = 86
+max-complexity = 10
+select = E,F,W,C901
+# E203: whitespace before ':' - conflicts with Black's slice formatting
+extend-ignore = E203
+
