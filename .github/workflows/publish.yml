@@ -30,7 +30,7 @@ jobs:
 
       - name: Install package with dev dependencies
         working-directory: ./sinkvis
-        run: uv sync --group dev --extra dev
+        run: uv sync --extra dev
 
       - name: Run tests
         working-directory: ./sinkvis
