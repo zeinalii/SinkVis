@@ -1,6 +1,6 @@
 # SinkVis
 
-**Attention Sink & KV Cache Visualizer** — An interactive tool for understanding attention patterns and cache behavior in large language models.
+**KV Cache Visualizer** — An interactive tool for understanding KV cache behavior and eviction policies in large language models.
 
 ![SinkVis](https://img.shields.io/badge/version-1.0.0-00ffcc?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)
@@ -104,11 +104,13 @@ SinkVis/
 │   ├── __init__.py
 │   ├── attention.py      # Attention pattern generation & analysis
 │   ├── eviction.py       # Eviction policy implementations
+│   ├── hf_loader.py      # HuggingFace model loading
 │   ├── models.py         # Pydantic data models
 │   ├── server.py         # FastAPI server
 │   └── tests/
 │       ├── test_attention.py
-│       └── test_eviction.py
+│       ├── test_eviction.py
+│       └── test_server.py
 ├── frontend/
 │   ├── index.html        # Main HTML page
 │   ├── styles.css        # Styling
@@ -127,6 +129,9 @@ SinkVis/
 | `/api/simulate` | POST | Run eviction simulation |
 | `/api/compare` | POST | Compare all eviction policies |
 | `/api/cache-profile` | GET | Get cache profile snapshot |
+| `/api/models/search` | GET | Search HuggingFace models |
+| `/api/models/load` | POST | Load a model from HuggingFace |
+| `/api/models/generate` | POST | Generate text with loaded model |
 | `/ws/attention` | WebSocket | Live attention streaming |
 
 ## Configuration
