@@ -117,4 +117,3 @@ def run_simulation(
         retained_heavy_hitters=heavy,
         final_cache=final_state,
     )
-

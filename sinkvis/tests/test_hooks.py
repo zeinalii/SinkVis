@@ -53,7 +53,9 @@ class MockAttentionLayer(nn.Module):
 class MockTransformerModel(nn.Module):
     """Minimal transformer-like model for testing hooks."""
 
-    def __init__(self, hidden_size: int = 64, num_heads: int = 4, num_layers: int = 2):
+    def __init__(
+        self, hidden_size: int = 64, num_heads: int = 4, num_layers: int = 2
+    ):
         super().__init__()
         self.embed = nn.Linear(32, hidden_size)
         # Use ModuleDict with 'attn' in names so pattern matching works
@@ -325,4 +327,3 @@ class TestPatternMatching:
         assert len(capture._hooks) > 0, "Should match case-insensitively"
 
         capture.stop()
-

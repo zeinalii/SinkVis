@@ -49,4 +49,3 @@ class MemoryProfiler:
             "max_allocated_gb": stats.max_allocated_gb,
             "free_gb": stats.free_gb,
         }
-

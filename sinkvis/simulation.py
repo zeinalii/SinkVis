@@ -54,4 +54,3 @@ def apply_eviction_mask(attention: torch.Tensor, mask: np.ndarray) -> torch.Tens
     device = attention.device
     mask_tensor = torch.from_numpy(mask).to(device)
     return attention[:, :, :, mask_tensor]
-

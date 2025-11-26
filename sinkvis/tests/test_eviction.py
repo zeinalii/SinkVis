@@ -245,7 +245,9 @@ class TestRunSimulation:
             window_size=8,
         )
 
-        result = run_simulation("hello world test example", config, generate_tokens=10)
+        result = run_simulation(
+            "hello world test example", config, generate_tokens=10
+        )
 
         assert result.policy == EvictionPolicy.STREAMING_LLM
         assert result.retained_sinks <= config.sink_count
@@ -286,7 +288,9 @@ class TestRunSimulation:
 
         result = run_simulation("the quick brown fox", config, generate_tokens=10)
 
-        assert result.cache_hits + result.cache_misses == result.total_tokens_processed
+        assert (
+            result.cache_hits + result.cache_misses == result.total_tokens_processed
+        )
 
     def test_evictions_triggered_when_over_capacity(self):
         """Evictions should occur when cache exceeds capacity."""
@@ -309,4 +313,3 @@ class TestRunSimulation:
         result = run_simulation("many words here to process", config)
 
         assert result.final_cache.total_tokens <= config.cache_size
-

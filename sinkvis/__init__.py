@@ -106,4 +106,3 @@ class SinkVis:
         if tokens is None:
             tokens = [f"tok_{i}" for i in range(attention_2d.shape[0])]
         return create_attention_frame(attention_2d, tokens)
-

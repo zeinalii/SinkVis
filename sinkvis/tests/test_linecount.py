@@ -61,7 +61,12 @@ def test_flake8():
     files = glob.glob(str(SINKVIS_DIR / "*.py"))
 
     result = subprocess.run(
-        ["flake8", "--max-complexity=10", "--max-line-length=86", "--select=E,F,W,C901"]
+        [
+            "flake8",
+            "--max-complexity=10",
+            "--max-line-length=86",
+            "--select=E,F,W,C901",
+        ]
         + files,
         capture_output=True,
         text=True,
@@ -72,4 +77,3 @@ def test_flake8():
         print(result.stderr)
 
     assert result.returncode == 0
-

@@ -87,4 +87,3 @@ class AttentionFrame:
     sink_indices: List[int]
     heavy_hitter_indices: List[int]
     timestamp: float
-

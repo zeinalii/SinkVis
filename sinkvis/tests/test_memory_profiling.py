@@ -93,7 +93,9 @@ class TestMemoryProfilerSnapshot:
         snapshot = profiler.snapshot()
 
         for key, value in snapshot.items():
-            assert isinstance(value, float), f"{key} should be float, got {type(value)}"
+            assert isinstance(
+                value, float
+            ), f"{key} should be float, got {type(value)}"
 
     def test_snapshot_values_non_negative(self):
         """All snapshot values should be non-negative."""
@@ -180,7 +182,9 @@ class TestMemoryProfilerGPU:
 
         # Free = reserved - allocated
         expected_free = stats.reserved_gb - stats.allocated_gb
-        assert abs(stats.free_gb - expected_free) < 0.001, "Free calculation incorrect"
+        assert (
+            abs(stats.free_gb - expected_free) < 0.001
+        ), "Free calculation incorrect"
 
         del tensor
         torch.cuda.empty_cache()
@@ -200,4 +204,3 @@ class TestMemoryProfilerConsistency:
         assert stats.reserved_gb == snapshot["reserved_gb"]
         assert stats.max_allocated_gb == snapshot["max_allocated_gb"]
         assert stats.free_gb == snapshot["free_gb"]
-
