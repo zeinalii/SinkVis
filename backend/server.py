@@ -28,6 +28,21 @@ from .attention import (
     generate_cache_blocks,
 )
 from .eviction import run_simulation, tokenize_simple
+from .hf_loader import (
+    get_loader,
+    ModelInfo,
+    LoadProgress,
+    LoadedModel,
+    ModelStatus,
+    TokenInfo,
+    get_token_info,
+)
+from .architecture import (
+    analyze_model_architecture,
+    analyze_layer_attention,
+    ModelArchitecture,
+    PerLayerAnalysis,
+)
 
 app = FastAPI(
     title="SinkVis",
@@ -85,19 +100,21 @@ manager = ConnectionManager()
 class DemoState:
     """State for the demo attention stream."""
     
+    DEFAULT_TEXT = (
+        "The transformer architecture revolutionized natural language processing. "
+        "Attention mechanisms allow models to focus on relevant parts of the input. "
+        "Key-value caches store intermediate computations for efficient generation. "
+        "Attention sinks are tokens that receive disproportionate attention scores. "
+        "Heavy hitters are semantically important tokens in the sequence."
+    )
+    
     def __init__(self):
         self.reset()
     
-    def reset(self):
+    def reset(self, prompt: Optional[str] = None):
         self.tokens = ["<s>", "<bos>"]
         self.current_position = 2
-        self.demo_text = (
-            "The transformer architecture revolutionized natural language processing. "
-            "Attention mechanisms allow models to focus on relevant parts of the input. "
-            "Key-value caches store intermediate computations for efficient generation. "
-            "Attention sinks are tokens that receive disproportionate attention scores. "
-            "Heavy hitters are semantically important tokens in the sequence."
-        )
+        self.demo_text = prompt if prompt else self.DEFAULT_TEXT
         self.demo_tokens = tokenize_simple(self.demo_text)
 
 
@@ -196,6 +213,371 @@ async def get_cache_profile(
     )
 
 
+# ============================================
+# Model Hub Endpoints
+# ============================================
+
+@app.get("/api/models/token-info")
+async def get_hf_token_info() -> TokenInfo:
+    """Get information about available HuggingFace token."""
+    return get_token_info()
+
+
+@app.get("/api/models/search")
+async def search_models(
+    query: str,
+    limit: int = 20,
+    filter_text_generation: bool = True,
+) -> list[ModelInfo]:
+    """Search for models on Hugging Face Hub."""
+    loader = get_loader()
+    try:
+        results = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: loader.search_models(query, limit, filter_text_generation),
+        )
+        return results
+    except Exception as e:
+        raise ValueError(f"Search failed: {e}")
+
+
+@app.get("/api/models/info/{model_id:path}")
+async def get_model_info(model_id: str) -> ModelInfo:
+    """Get information about a specific model."""
+    loader = get_loader()
+    try:
+        info = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: loader.get_model_info(model_id),
+        )
+        return info
+    except Exception as e:
+        raise ValueError(f"Failed to get model info: {e}")
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class LoadModelRequest(PydanticBaseModel):
+    """Request body for loading a model."""
+    model_id: str
+    device: str = "auto"
+    dtype: str = "auto"
+    trust_remote_code: bool = False
+    token: Optional[str] = None
+
+
+@app.post("/api/models/load")
+async def load_model(request: LoadModelRequest) -> LoadedModel:
+    """Load a model from Hugging Face Hub."""
+    loader = get_loader()
+    
+    # Unload existing model first
+    if loader.is_model_loaded():
+        loader.unload_model()
+    
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: loader.load_model(
+                model_id=request.model_id,
+                device=request.device,
+                dtype=request.dtype,
+                trust_remote_code=request.trust_remote_code,
+                token=request.token,
+            ),
+        )
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to load model: {e}")
+
+
+@app.post("/api/models/unload")
+async def unload_model():
+    """Unload the current model."""
+    loader = get_loader()
+    loader.unload_model()
+    return {"status": "ok", "message": "Model unloaded"}
+
+
+@app.get("/api/models/status")
+async def get_model_status() -> LoadProgress:
+    """Get the current model loading status."""
+    loader = get_loader()
+    return loader.get_status()
+
+
+class AttentionRequest(PydanticBaseModel):
+    """Request body for getting attention weights."""
+    text: str
+    layer: int = -1
+    head: Optional[int] = None
+
+
+@app.post("/api/models/attention")
+async def get_model_attention(request: AttentionRequest):
+    """Get attention weights from the loaded model."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded")
+    
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: loader.get_attention_weights(
+                text=request.text,
+                layer=request.layer,
+                head=request.head,
+            ),
+        )
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to get attention: {e}")
+
+
+@app.get("/api/models/architecture")
+async def get_model_architecture() -> ModelArchitecture:
+    """Get detailed architecture information about the loaded model."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded. Please load a model first.")
+    
+    if loader.model is None or loader.tokenizer is None or loader.model_id is None:
+        raise ValueError("Model not properly loaded. Please reload the model.")
+    
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: analyze_model_architecture(
+                model=loader.model,
+                tokenizer=loader.tokenizer,
+                model_id=loader.model_id,
+            ),
+        )
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to analyze architecture: {e}")
+
+
+class LayerAnalysisRequest(PydanticBaseModel):
+    """Request for per-layer attention analysis."""
+    text: str
+    sink_threshold: float = 0.1
+    heavy_hitter_threshold: float = 0.05
+
+
+@app.post("/api/models/layer-analysis")
+async def get_layer_analysis(request: LayerAnalysisRequest) -> PerLayerAnalysis:
+    """Analyze attention patterns across all layers."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded. Please load a model first.")
+    
+    if loader.model is None or loader.tokenizer is None:
+        raise ValueError("Model not properly loaded. Please reload the model.")
+    
+    try:
+        # Get attention from all layers
+        def run_analysis():
+            import torch
+            
+            if loader.model is None or loader.tokenizer is None:
+                raise ValueError("Model was unloaded during processing")
+            
+            inputs = loader.tokenizer(request.text, return_tensors="pt")
+            device = next(loader.model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = loader.model(
+                    **inputs,
+                    output_attentions=True,
+                    return_dict=True,
+                )
+            
+            if outputs.attentions is None or len(outputs.attentions) == 0:
+                raise ValueError("Model did not return attention weights")
+            
+            # Convert attention to list format
+            attentions = [attn.cpu().numpy().tolist() for attn in outputs.attentions]
+            
+            return analyze_layer_attention(
+                attention_weights=attentions,
+                sink_threshold=request.sink_threshold,
+                heavy_hitter_threshold=request.heavy_hitter_threshold,
+            )
+        
+        result = await asyncio.get_event_loop().run_in_executor(None, run_analysis)
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to analyze layers: {e}")
+
+
+class AllLayersAttentionRequest(PydanticBaseModel):
+    """Request for attention from all layers."""
+    text: str
+    head: int | None = None
+
+
+@app.post("/api/models/all-layers-attention")
+async def get_all_layers_attention(request: AllLayersAttentionRequest):
+    """Get attention weights from all layers for visualization."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded. Please load a model first.")
+    
+    if loader.model is None or loader.tokenizer is None:
+        raise ValueError("Model or tokenizer not available. Please reload the model.")
+    
+    try:
+        def run_attention():
+            import torch
+            
+            # Double-check model is still loaded
+            if loader.model is None or loader.tokenizer is None:
+                raise ValueError("Model was unloaded during processing")
+            
+            inputs = loader.tokenizer(request.text, return_tensors="pt")
+            device = next(loader.model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Some models use SDPA or flash attention which don't return attention weights
+            # Try to temporarily disable it if possible
+            original_attn_impl = None
+            if hasattr(loader.model.config, '_attn_implementation'):
+                original_attn_impl = loader.model.config._attn_implementation
+                loader.model.config._attn_implementation = "eager"
+            
+            try:
+                with torch.no_grad():
+                    outputs = loader.model(
+                        **inputs,
+                        output_attentions=True,
+                        return_dict=True,
+                    )
+            finally:
+                # Restore original attention implementation
+                if original_attn_impl is not None:
+                    loader.model.config._attn_implementation = original_attn_impl
+            
+            tokens = loader.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
+            
+            # Check if attentions are available
+            if outputs.attentions is None or len(outputs.attentions) == 0:
+                raise ValueError("Model did not return attention weights. This model may use an attention implementation (like Flash Attention) that doesn't support attention output.")
+            
+            # Filter out None attentions - also check for tensor validity
+            valid_attentions = []
+            for a in outputs.attentions:
+                if a is not None and hasattr(a, 'shape'):
+                    valid_attentions.append(a)
+            
+            if len(valid_attentions) == 0:
+                raise ValueError("Model returned empty attention weights. Try reloading the model or using a different model.")
+            
+            # Process attention for each layer
+            layer_attentions = []
+            for layer_idx, attn in enumerate(outputs.attentions):
+                # Skip if attention is None for this layer
+                if attn is None:
+                    continue
+                    
+                # attn is [batch, heads, seq, seq]
+                if request.head is not None:
+                    layer_attn = attn[0, request.head].cpu().numpy().tolist()
+                else:
+                    # Average across heads
+                    layer_attn = attn[0].mean(dim=0).cpu().numpy().tolist()
+                
+                layer_attentions.append({
+                    "layer": layer_idx,
+                    "attention": layer_attn,
+                })
+            
+            # Get num_heads from first valid attention
+            num_heads = valid_attentions[0].shape[1] if valid_attentions else 0
+            
+            return {
+                "tokens": tokens,
+                "seq_len": len(tokens),
+                "num_layers": len(layer_attentions),
+                "num_heads": num_heads,
+                "layers": layer_attentions,
+            }
+        
+        result = await asyncio.get_event_loop().run_in_executor(None, run_attention)
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to get attention: {e}")
+
+
+class GenerateRequest(PydanticBaseModel):
+    """Request for text generation."""
+    prompt: str
+    max_new_tokens: int = 50
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 50
+    do_sample: bool = True
+
+
+@app.post("/api/models/generate")
+async def generate_text(request: GenerateRequest):
+    """Generate text using the loaded model."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded. Please load a model first.")
+    
+    if loader.model is None or loader.tokenizer is None:
+        raise ValueError("Model not properly loaded. Please reload the model.")
+    
+    try:
+        def run_generation():
+            import torch
+            
+            if loader.model is None or loader.tokenizer is None:
+                raise ValueError("Model was unloaded during processing")
+            
+            inputs = loader.tokenizer(request.prompt, return_tensors="pt")
+            device = next(loader.model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Set pad token if not set
+            if loader.tokenizer.pad_token_id is None:
+                loader.tokenizer.pad_token_id = loader.tokenizer.eos_token_id
+            
+            with torch.no_grad():
+                outputs = loader.model.generate(
+                    **inputs,
+                    max_new_tokens=request.max_new_tokens,
+                    temperature=request.temperature if request.do_sample else 1.0,
+                    top_p=request.top_p if request.do_sample else 1.0,
+                    top_k=request.top_k if request.do_sample else 0,
+                    do_sample=request.do_sample,
+                    pad_token_id=loader.tokenizer.pad_token_id,
+                )
+            
+            generated_text = loader.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            new_text = generated_text[len(request.prompt):]
+            
+            return {
+                "prompt": request.prompt,
+                "generated": new_text,
+                "full_text": generated_text,
+                "tokens_generated": len(outputs[0]) - len(inputs["input_ids"][0]),
+            }
+        
+        result = await asyncio.get_event_loop().run_in_executor(None, run_generation)
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to generate text: {e}")
+
+
 @app.websocket("/ws/attention")
 async def attention_stream(websocket: WebSocket):
     """
@@ -215,7 +597,8 @@ async def attention_stream(websocket: WebSocket):
                 manager.stream_config = StreamConfig(**message.get("config", {}))
             
             elif message.get("type") == "start":
-                demo_state.reset()
+                prompt = message.get("prompt")
+                demo_state.reset(prompt)
                 manager.is_streaming = True
                 
                 # Start streaming in background
@@ -225,7 +608,8 @@ async def attention_stream(websocket: WebSocket):
                 manager.is_streaming = False
             
             elif message.get("type") == "reset":
-                demo_state.reset()
+                prompt = message.get("prompt")
+                demo_state.reset(prompt)
                 manager.is_streaming = False
                 await websocket.send_json({"type": "reset", "status": "ok"})
             

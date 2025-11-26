@@ -29,22 +29,286 @@
                 </div>
             </div>
             <nav class="nav">
-                <button class="nav-btn active" data-view="stream">
+                <button class="nav-btn active" data-view="modelhub">
+                    <span class="icon">⬢</span> Model Hub
+                </button>
+                <button class="nav-btn" data-view="architecture" data-requires-model="true">
+                    <span class="icon">◫</span> Architecture
+                </button>
+                <button class="nav-btn" data-view="stream" data-requires-model="true">
                     <span class="icon">◉</span> Live Stream
                 </button>
-                <button class="nav-btn" data-view="simulate">
+                <button class="nav-btn" data-view="simulate" data-requires-model="true">
                     <span class="icon">⚙</span> Eviction Sim
                 </button>
-                <button class="nav-btn" data-view="profile">
+                <button class="nav-btn" data-view="profile" data-requires-model="true">
                     <span class="icon">▤</span> Cache Profile
                 </button>
+                <button class="nav-btn" data-view="playground" data-requires-model="true">
+                    <span class="icon">▷</span> Playground
+                </button>
             </nav>
+            <div class="model-indicator" id="model-indicator">
+                <span class="indicator-dot"></span>
+                <span class="indicator-text">No model loaded</span>
+            </div>
         </header>
 
         <!-- Main Content -->
         <main class="main">
+            <!-- Model Hub View (First/Default) -->
+            <section id="modelhub-view" class="view active">
+                <div class="view-header">
+                    <h2>Hugging Face Model Hub</h2>
+                    <p class="view-subtitle">Load a model to start visualizing attention patterns</p>
+                </div>
+
+                <div class="modelhub-layout">
+                    <!-- Search & Model List -->
+                    <div class="model-search-panel">
+                        <div class="search-bar">
+                            <input type="text" id="model-search-input" placeholder="Search models (e.g., gpt2, llama, mistral...)">
+                            <button id="model-search-btn" class="btn btn-primary">
+                                <span class="icon">⌕</span> Search
+                            </button>
+                        </div>
+                        
+                        <div class="search-filters">
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="filter-text-gen" checked>
+                                <span>Text Generation Only</span>
+                            </label>
+                        </div>
+                        
+                        <div id="model-search-results" class="model-list">
+                            <div class="model-list-placeholder">
+                                <div class="placeholder-icon">⬢</div>
+                                <p>Search for a model to get started</p>
+                                <p class="hint">Try: gpt2, distilgpt2, microsoft/phi-2</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Model Details & Loading -->
+                    <div class="model-details-panel">
+                        <div class="model-info-card" id="model-info-card">
+                            <div class="model-info-placeholder">
+                                <p>Select a model from the search results</p>
+                            </div>
+                        </div>
+
+                        <div class="model-load-config">
+                            <h3>Load Configuration</h3>
+                            <div class="config-grid">
+                                <div class="input-group">
+                                    <label>Device</label>
+                                    <select id="load-device">
+                                        <option value="auto">Auto (Best Available)</option>
+                                        <option value="cuda">CUDA GPU</option>
+                                        <option value="mps">Apple Silicon</option>
+                                        <option value="cpu">CPU</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <label>Precision</label>
+                                    <select id="load-dtype">
+                                        <option value="auto">Auto</option>
+                                        <option value="float16">Float16 (Faster)</option>
+                                        <option value="bfloat16">BFloat16</option>
+                                        <option value="float32">Float32 (Most Accurate)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="input-group" id="hf-token-group">
+                                <label>HuggingFace Token (for gated models)</label>
+                                <div class="token-status" id="token-status"></div>
+                                <input type="password" id="hf-token" placeholder="hf_...">
+                            </div>
+                            <label class="filter-checkbox">
+                                <input type="checkbox" id="trust-remote-code">
+                                <span>Trust Remote Code</span>
+                            </label>
+                        </div>
+
+                        <div class="model-actions">
+                            <button id="model-load-btn" class="btn btn-primary" disabled>
+                                <span class="icon">↓</span> Load Model
+                            </button>
+                            <button id="model-unload-btn" class="btn btn-secondary" disabled>
+                                <span class="icon">✕</span> Unload
+                            </button>
+                        </div>
+
+                        <div class="model-status-panel" id="model-status-panel">
+                            <div class="status-idle">
+                                <span class="status-icon">○</span>
+                                <span>No model loaded</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Loaded Model Info & Quick Test -->
+                    <div class="model-active-panel">
+                        <div class="loaded-model-info" id="loaded-model-info">
+                            <div class="no-model-loaded">
+                                <div class="placeholder-icon">⬡</div>
+                                <p>Load a model to see its details</p>
+                            </div>
+                        </div>
+
+                        <div class="quick-actions" id="quick-actions" style="display: none;">
+                            <h3>Quick Actions</h3>
+                            <div class="quick-action-buttons">
+                                <button class="btn btn-primary quick-action-btn" data-action="architecture">
+                                    <span class="icon">◫</span> Architecture
+                                    <span class="action-desc">Explore model layers & structure</span>
+                                </button>
+                                <button class="btn btn-secondary quick-action-btn" data-action="stream">
+                                    <span class="icon">◉</span> Live Stream
+                                    <span class="action-desc">Watch attention in real-time</span>
+                                </button>
+                                <button class="btn btn-secondary quick-action-btn" data-action="simulate">
+                                    <span class="icon">⚙</span> Eviction Sim
+                                    <span class="action-desc">Compare cache policies</span>
+                                </button>
+                                <button class="btn btn-secondary quick-action-btn" data-action="profile">
+                                    <span class="icon">▤</span> Cache Profile
+                                    <span class="action-desc">View memory hierarchy</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="attention-test-panel">
+                            <h3>Quick Attention Test</h3>
+                            <div class="input-group">
+                                <label>Input Text</label>
+                                <textarea id="attention-test-input" placeholder="Enter text to visualize attention patterns...">The transformer architecture has revolutionized AI.</textarea>
+                            </div>
+                            <div class="config-row-sm">
+                                <div class="input-group">
+                                    <label>Layer</label>
+                                    <input type="number" id="attention-layer" value="-1" min="-1">
+                                </div>
+                                <div class="input-group">
+                                    <label>Head (optional)</label>
+                                    <input type="number" id="attention-head" placeholder="All">
+                                </div>
+                            </div>
+                            <button id="attention-test-btn" class="btn btn-primary" disabled>
+                                <span class="icon">▶</span> Get Attention
+                            </button>
+                            <div id="attention-test-results" class="attention-results">
+                                <p class="results-placeholder">Load a model to test attention</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Architecture View -->
+            <section id="architecture-view" class="view">
+                <div class="model-required-overlay" id="architecture-model-required">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">◫</div>
+                        <h3>Model Required</h3>
+                        <p>Load a model from the Model Hub to explore its architecture</p>
+                        <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
+                    </div>
+                </div>
+                <div class="view-header">
+                    <h2>Model Architecture</h2>
+                    <div class="controls">
+                        <button id="arch-refresh" class="btn btn-primary">
+                            <span class="icon">↻</span> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <div class="architecture-layout">
+                    <!-- Model Overview Panel -->
+                    <div class="arch-overview-panel">
+                        <h3>Model Overview</h3>
+                        <div id="arch-model-info" class="arch-model-info">
+                            <div class="arch-placeholder">
+                                <p>Load a model to see architecture details</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Layer Visualization -->
+                    <div class="arch-layers-panel">
+                        <h3>Layer Structure</h3>
+                        <div class="layer-viz-controls">
+                            <div class="input-group inline">
+                                <label>View Mode</label>
+                                <select id="layer-view-mode">
+                                    <option value="stack">Stack View</option>
+                                    <option value="grid">Grid View</option>
+                                    <option value="detailed">Detailed View</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="layer-visualization" class="layer-visualization">
+                            <div class="layer-stack-placeholder">
+                                <p>Layer structure will appear here</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- KV Cache Metrics -->
+                    <div class="arch-kv-panel">
+                        <h3>KV Cache Analysis</h3>
+                        <div id="kv-cache-metrics" class="kv-cache-metrics">
+                            <div class="kv-placeholder">
+                                <p>Cache metrics will appear here</p>
+                            </div>
+                        </div>
+                        
+                        <h3>Memory Projection</h3>
+                        <div id="memory-projection" class="memory-projection">
+                            <div class="projection-chart"></div>
+                        </div>
+                    </div>
+
+                    <!-- Attention Analysis -->
+                    <div class="arch-attention-panel">
+                        <h3>Per-Layer Attention Analysis</h3>
+                        <div class="attention-analysis-input">
+                            <div class="input-group">
+                                <label>Sample Text</label>
+                                <textarea id="arch-sample-text" placeholder="Enter text to analyze attention patterns across layers...">The transformer architecture enables parallel processing of sequence data through self-attention mechanisms.</textarea>
+                            </div>
+                            <button id="arch-analyze-btn" class="btn btn-primary">
+                                <span class="icon">▶</span> Analyze All Layers
+                            </button>
+                        </div>
+                        
+                        <div id="layer-attention-grid" class="layer-attention-grid">
+                            <div class="analysis-placeholder">
+                                <p>Click "Analyze All Layers" to see attention patterns across the model</p>
+                            </div>
+                        </div>
+
+                        <div id="layer-stats-panel" class="layer-stats-panel">
+                            <h4>Layer Statistics</h4>
+                            <div id="layer-stats-grid" class="layer-stats-grid">
+                                <!-- Layer statistics will be rendered here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Live Streaming View -->
-            <section id="stream-view" class="view active">
+            <section id="stream-view" class="view">
+                <div class="model-required-overlay" id="stream-model-required">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">◉</div>
+                        <h3>Model Required</h3>
+                        <p>Load a model from the Model Hub to stream live attention patterns</p>
+                        <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
+                    </div>
+                </div>
                 <div class="view-header">
                     <h2>Live Attention Stream</h2>
                     <div class="controls">
@@ -63,6 +327,13 @@
                     </div>
                 </div>
 
+                <div class="stream-prompt-bar">
+                    <div class="input-group">
+                        <label>Input Prompt</label>
+                        <textarea id="stream-prompt" placeholder="Enter text to stream attention patterns...">The transformer architecture has revolutionized natural language processing by introducing self-attention mechanisms that allow models to weigh the importance of different parts of the input sequence.</textarea>
+                    </div>
+                </div>
+
                 <div class="stream-layout">
                     <div class="heatmap-container">
                         <div class="heatmap-header">
@@ -77,6 +348,7 @@
                                 <p>Start streaming to visualize attention patterns</p>
                             </div>
                         </div>
+                        <div id="heatmap-tooltip" class="heatmap-tooltip"></div>
                         <div class="heatmap-axes">
                             <span class="axis-label y-label">Query Position →</span>
                             <span class="axis-label x-label">Key Position →</span>
@@ -128,6 +400,14 @@
 
             <!-- Eviction Simulation View -->
             <section id="simulate-view" class="view">
+                <div class="model-required-overlay" id="simulate-model-required">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">⚙</div>
+                        <h3>Model Required</h3>
+                        <p>Load a model to simulate eviction policies with real attention patterns</p>
+                        <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
+                    </div>
+                </div>
                 <div class="view-header">
                     <h2>Eviction Policy Simulation</h2>
                 </div>
@@ -185,6 +465,14 @@
 
             <!-- Cache Profile View -->
             <section id="profile-view" class="view">
+                <div class="model-required-overlay" id="profile-model-required">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">▤</div>
+                        <h3>Model Required</h3>
+                        <p>Load a model to view cache memory hierarchy</p>
+                        <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
+                    </div>
+                </div>
                 <div class="view-header">
                     <h2>Hierarchical Cache Profile</h2>
                     <div class="controls">
@@ -267,6 +555,96 @@
                         <h3>Block Details</h3>
                         <div id="block-info" class="block-info">
                             <p class="info-placeholder">Hover over a block to see details</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Playground View -->
+            <section id="playground-view" class="view">
+                <div class="model-required-overlay" id="playground-model-required">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">▷</div>
+                        <h3>Model Required</h3>
+                        <p>Load a model from the Model Hub to generate text</p>
+                        <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
+                    </div>
+                </div>
+                <div class="view-header">
+                    <h2>Playground</h2>
+                    <p class="view-subtitle">Generate text and explore model outputs</p>
+                </div>
+
+                <div class="playground-layout">
+                    <div class="playground-main">
+                        <div class="playground-input-section">
+                            <div class="input-group">
+                                <label>Prompt</label>
+                                <textarea id="playground-prompt" placeholder="Enter your prompt here..." rows="4">Once upon a time in a land far away,</textarea>
+                            </div>
+                            <div class="playground-controls">
+                                <button id="playground-generate" class="btn btn-primary">
+                                    <span class="icon">▶</span> Generate
+                                </button>
+                                <button id="playground-clear" class="btn btn-secondary">
+                                    <span class="icon">✕</span> Clear
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="playground-output-section">
+                            <div class="output-header">
+                                <h3>Generated Output</h3>
+                                <div id="generation-stats" class="generation-stats"></div>
+                            </div>
+                            <div id="playground-output" class="playground-output">
+                                <p class="output-placeholder">Generated text will appear here...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="playground-sidebar">
+                        <div class="generation-config">
+                            <h3>Generation Settings</h3>
+                            
+                            <div class="config-group">
+                                <label>Max New Tokens</label>
+                                <input type="number" id="gen-max-tokens" value="50" min="1" max="512">
+                            </div>
+                            
+                            <div class="config-group">
+                                <label>Temperature</label>
+                                <input type="range" id="gen-temperature" min="0" max="200" value="70">
+                                <span id="gen-temperature-value">0.70</span>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label>Top-P (Nucleus)</label>
+                                <input type="range" id="gen-top-p" min="0" max="100" value="90">
+                                <span id="gen-top-p-value">0.90</span>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label>Top-K</label>
+                                <input type="number" id="gen-top-k" value="50" min="0" max="100">
+                            </div>
+                            
+                            <div class="config-group">
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" id="gen-do-sample" checked>
+                                    <span>Enable Sampling</span>
+                                </label>
+                                <p class="config-hint">Disable for greedy decoding</p>
+                            </div>
+                        </div>
+
+                        <div class="generation-tips">
+                            <h3>Tips</h3>
+                            <ul>
+                                <li><strong>Temperature:</strong> Higher = more creative, lower = more focused</li>
+                                <li><strong>Top-P:</strong> Limits to tokens with cumulative probability</li>
+                                <li><strong>Top-K:</strong> Limits to top K most likely tokens</li>
+                            </ul>
                         </div>
                     </div>
                 </div>

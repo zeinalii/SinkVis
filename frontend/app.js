@@ -27,7 +27,7 @@ const HEATMAP_CONFIG = {
 // ============================================
 
 const state = {
-    currentView: 'stream',
+    currentView: 'modelhub',
     ws: null,
     isConnected: false,
     isStreaming: false,
@@ -36,6 +36,13 @@ const state = {
         update_interval_ms: 200,
         sink_threshold: 0.1,
         heavy_hitter_threshold: 0.05
+    },
+    // Model Hub state
+    modelHub: {
+        selectedModel: null,
+        loadedModel: null,
+        isLoading: false,
+        searchResults: []
     }
 };
 
@@ -48,6 +55,9 @@ document.addEventListener('DOMContentLoaded', () => {
     initStreamView();
     initSimulateView();
     initProfileView();
+    initModelHubView();
+    initArchitectureView();
+    initPlaygroundView();
     connectWebSocket();
 });
 
@@ -64,6 +74,11 @@ function initNavigation() {
             switchView(view);
         });
     });
+    
+    // Handle "Go to Model Hub" buttons in overlays
+    document.querySelectorAll('.goto-modelhub-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchView('modelhub'));
+    });
 }
 
 function switchView(viewName) {
@@ -78,6 +93,11 @@ function switchView(viewName) {
     });
     
     state.currentView = viewName;
+    
+    // Auto-load architecture when switching to architecture tab with a loaded model
+    if (viewName === 'architecture' && state.modelHub.loadedModel && !archState.architecture) {
+        loadArchitecture();
+    }
 }
 
 // ============================================
@@ -183,8 +203,14 @@ function startStreaming() {
         return;
     }
     
+    const prompt = document.getElementById('stream-prompt').value.trim();
+    if (!prompt) {
+        alert('Please enter a prompt to stream');
+        return;
+    }
+    
     state.isStreaming = true;
-    sendWSMessage({ type: 'start' });
+    sendWSMessage({ type: 'start', prompt: prompt });
     updateStreamButtons();
 }
 
@@ -200,7 +226,8 @@ function stepStreaming() {
 
 function resetStreaming() {
     state.isStreaming = false;
-    sendWSMessage({ type: 'reset' });
+    const prompt = document.getElementById('stream-prompt').value.trim();
+    sendWSMessage({ type: 'reset', prompt: prompt || null });
     clearHeatmap();
     clearTokens();
     updateStats(0, 0, 0);
@@ -223,6 +250,9 @@ function updateStreamButtons() {
 // Attention Heatmap Rendering
 // ============================================
 
+// Store current heatmap data for tooltip
+let currentHeatmapData = null;
+
 function renderAttentionFrame(frame) {
     const container = document.getElementById('attention-heatmap');
     const seqLen = frame.seq_len;
@@ -232,6 +262,16 @@ function renderAttentionFrame(frame) {
     const cellSize = Math.max(2, Math.floor(maxDim / seqLen));
     const size = cellSize * seqLen;
     
+    // Store data for tooltip
+    currentHeatmapData = {
+        weights: frame.attention_weights,
+        tokens: frame.token_labels,
+        sinks: new Set(frame.sink_indices),
+        heavyHitters: new Set(frame.heavy_hitter_indices),
+        cellSize: cellSize,
+        seqLen: seqLen
+    };
+    
     // Get or create canvas
     let canvas = container.querySelector('.heatmap-canvas');
     if (!canvas) {
@@ -239,6 +279,10 @@ function renderAttentionFrame(frame) {
         canvas = document.createElement('canvas');
         canvas.className = 'heatmap-canvas';
         container.appendChild(canvas);
+        
+        // Add hover event listeners
+        canvas.addEventListener('mousemove', handleHeatmapHover);
+        canvas.addEventListener('mouseleave', hideHeatmapTooltip);
     }
     
     canvas.width = size;
@@ -249,8 +293,8 @@ function renderAttentionFrame(frame) {
     
     // Render attention weights
     const weights = frame.attention_weights;
-    const sinks = new Set(frame.sink_indices);
-    const heavyHitters = new Set(frame.heavy_hitter_indices);
+    const sinks = currentHeatmapData.sinks;
+    const heavyHitters = currentHeatmapData.heavyHitters;
     
     for (let i = 0; i < seqLen; i++) {
         for (let j = 0; j < seqLen; j++) {
@@ -303,6 +347,105 @@ function renderAttentionFrame(frame) {
     updateStats(seqLen, sinks.size, heavyHitters.size);
 }
 
+function handleHeatmapHover(event) {
+    if (!currentHeatmapData) return;
+    
+    const canvas = event.target;
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    
+    const { cellSize, seqLen, weights, tokens, sinks, heavyHitters } = currentHeatmapData;
+    
+    // Calculate which cell is being hovered
+    const keyIdx = Math.floor(x / cellSize);
+    const queryIdx = Math.floor(y / cellSize);
+    
+    // Check bounds
+    if (keyIdx < 0 || keyIdx >= seqLen || queryIdx < 0 || queryIdx >= seqLen) {
+        hideHeatmapTooltip();
+        return;
+    }
+    
+    // Only show for valid attention (lower triangle)
+    if (keyIdx > queryIdx) {
+        hideHeatmapTooltip();
+        return;
+    }
+    
+    const attentionValue = weights[queryIdx][keyIdx];
+    const queryToken = tokens[queryIdx] || `[${queryIdx}]`;
+    const keyToken = tokens[keyIdx] || `[${keyIdx}]`;
+    
+    const isSinkKey = sinks.has(keyIdx);
+    const isHeavyKey = heavyHitters.has(keyIdx);
+    const isSinkQuery = sinks.has(queryIdx);
+    const isHeavyQuery = heavyHitters.has(queryIdx);
+    
+    showHeatmapTooltip(event, {
+        queryIdx,
+        keyIdx,
+        queryToken,
+        keyToken,
+        attentionValue,
+        isSinkKey,
+        isHeavyKey,
+        isSinkQuery,
+        isHeavyQuery
+    });
+}
+
+function showHeatmapTooltip(event, data) {
+    const tooltip = document.getElementById('heatmap-tooltip');
+    
+    const keyClass = data.isSinkKey ? 'sink' : (data.isHeavyKey ? 'heavy' : '');
+    const queryClass = data.isSinkQuery ? 'sink' : (data.isHeavyQuery ? 'heavy' : '');
+    
+    tooltip.innerHTML = `
+        <div class="tooltip-header">
+            <span>Attention</span>
+            <span class="tooltip-value">${(data.attentionValue * 100).toFixed(1)}%</span>
+        </div>
+        <div class="tooltip-tokens">
+            <div class="token-row">
+                <span class="token-label">Query [${data.queryIdx}]</span>
+                <span class="token-text ${queryClass}">${escapeHtml(data.queryToken)}</span>
+            </div>
+            <div class="token-row">
+                <span class="token-label">→ Key [${data.keyIdx}]</span>
+                <span class="token-text ${keyClass}">${escapeHtml(data.keyToken)}</span>
+            </div>
+        </div>
+        <div class="attention-bar">
+            <div class="attention-fill" style="width: ${data.attentionValue * 100}%"></div>
+        </div>
+    `;
+    
+    // Position tooltip
+    const tooltipRect = tooltip.getBoundingClientRect();
+    let left = event.clientX + 15;
+    let top = event.clientY + 15;
+    
+    // Keep tooltip in viewport
+    if (left + 300 > window.innerWidth) {
+        left = event.clientX - 315;
+    }
+    if (top + 150 > window.innerHeight) {
+        top = event.clientY - 155;
+    }
+    
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.classList.add('visible');
+}
+
+function hideHeatmapTooltip() {
+    const tooltip = document.getElementById('heatmap-tooltip');
+    if (tooltip) {
+        tooltip.classList.remove('visible');
+    }
+}
+
 function getHeatmapColor(value) {
     const stops = HEATMAP_CONFIG.colorScale;
     
@@ -336,6 +479,8 @@ function clearHeatmap() {
             <p>Start streaming to visualize attention patterns</p>
         </div>
     `;
+    currentHeatmapData = null;
+    hideHeatmapTooltip();
 }
 
 function renderTokens(tokens, sinks, heavyHitters) {
@@ -702,5 +847,1157 @@ function formatBytes(bytes) {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// ============================================
+// Model Hub View
+// ============================================
+
+function initModelHubView() {
+    // Search functionality
+    const searchBtn = document.getElementById('model-search-btn');
+    const searchInput = document.getElementById('model-search-input');
+    
+    searchBtn.addEventListener('click', searchModels);
+    searchInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') searchModels();
+    });
+    
+    // Load/Unload buttons
+    document.getElementById('model-load-btn').addEventListener('click', loadSelectedModel);
+    document.getElementById('model-unload-btn').addEventListener('click', unloadModel);
+    
+    // Attention test
+    document.getElementById('attention-test-btn').addEventListener('click', testAttention);
+    
+    // Quick action buttons
+    document.querySelectorAll('.quick-action-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const action = btn.dataset.action;
+            if (action) switchView(action);
+        });
+    });
+    
+    // Check initial model status and token
+    checkModelStatus();
+    checkTokenStatus();
+}
+
+async function checkTokenStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/models/token-info`);
+        if (!response.ok) return;
+        
+        const tokenInfo = await response.json();
+        renderTokenStatus(tokenInfo);
+    } catch (error) {
+        // Server not available, show empty input
+        renderTokenStatus({ available: false, source: 'none' });
+    }
+}
+
+function renderTokenStatus(tokenInfo) {
+    const statusEl = document.getElementById('token-status');
+    const inputEl = document.getElementById('hf-token');
+    
+    if (tokenInfo.available) {
+        const sourceLabels = {
+            'hf_cache': 'HuggingFace CLI',
+            'env_var': 'Environment Variable',
+            'env_file': '.env file'
+        };
+        
+        const sourceLabel = sourceLabels[tokenInfo.source] || tokenInfo.source;
+        const sourcePath = tokenInfo.source_path || '';
+        
+        statusEl.innerHTML = `
+            <div class="token-found">
+                <span class="token-icon">✓</span>
+                <span>Token loaded from <strong>${sourceLabel}</strong></span>
+                ${sourcePath ? `<span class="token-path" title="${sourcePath}">(${truncatePath(sourcePath)})</span>` : ''}
+                <span class="token-masked">${tokenInfo.masked_token}</span>
+            </div>
+        `;
+        statusEl.classList.add('has-token');
+        
+        // Hide the manual input since we have a token
+        inputEl.style.display = 'none';
+        inputEl.placeholder = 'Token auto-detected';
+    } else {
+        statusEl.innerHTML = `
+            <div class="token-missing">
+                <span class="token-icon">○</span>
+                <span>No token found. Enter manually for gated models.</span>
+            </div>
+        `;
+        statusEl.classList.remove('has-token');
+        inputEl.style.display = 'block';
+        inputEl.placeholder = 'hf_...';
+    }
+}
+
+function truncatePath(path) {
+    if (path.length <= 40) return path;
+    const parts = path.split('/');
+    if (parts.length <= 3) return path;
+    return `.../${parts.slice(-2).join('/')}`;
+}
+
+async function searchModels() {
+    const query = document.getElementById('model-search-input').value.trim();
+    if (!query) return;
+    
+    const filterTextGen = document.getElementById('filter-text-gen').checked;
+    const resultsContainer = document.getElementById('model-search-results');
+    
+    resultsContainer.innerHTML = `
+        <div class="model-list-placeholder">
+            <div class="placeholder-icon loading">⟳</div>
+            <p>Searching...</p>
+        </div>
+    `;
+    
+    try {
+        const response = await fetch(
+            `${API_BASE}/api/models/search?query=${encodeURIComponent(query)}&limit=20&filter_text_generation=${filterTextGen}`
+        );
+        
+        if (!response.ok) throw new Error('Search failed');
+        
+        const models = await response.json();
+        state.modelHub.searchResults = models;
+        renderSearchResults(models);
+    } catch (error) {
+        console.error('Search error:', error);
+        resultsContainer.innerHTML = `
+            <div class="model-list-placeholder error">
+                <div class="placeholder-icon">⚠</div>
+                <p>Search failed: ${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+function renderSearchResults(models) {
+    const container = document.getElementById('model-search-results');
+    
+    if (models.length === 0) {
+        container.innerHTML = `
+            <div class="model-list-placeholder">
+                <div class="placeholder-icon">∅</div>
+                <p>No models found</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = models.map(model => `
+        <div class="model-card" data-model-id="${model.model_id}">
+            <div class="model-card-header">
+                <span class="model-name">${model.model_id}</span>
+                ${model.is_gated ? '<span class="model-badge gated">Gated</span>' : ''}
+            </div>
+            <div class="model-card-meta">
+                <span class="meta-item">
+                    <span class="meta-icon">↓</span> ${formatNumber(model.downloads)}
+                </span>
+                <span class="meta-item">
+                    <span class="meta-icon">♥</span> ${formatNumber(model.likes)}
+                </span>
+                ${model.pipeline_tag ? `<span class="meta-item tag">${model.pipeline_tag}</span>` : ''}
+            </div>
+        </div>
+    `).join('');
+    
+    // Add click handlers
+    container.querySelectorAll('.model-card').forEach(card => {
+        card.addEventListener('click', () => selectModel(card.dataset.modelId));
+    });
+}
+
+function formatNumber(num) {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toString();
+}
+
+function selectModel(modelId) {
+    // Update UI selection
+    document.querySelectorAll('.model-card').forEach(card => {
+        card.classList.toggle('selected', card.dataset.modelId === modelId);
+    });
+    
+    const model = state.modelHub.searchResults.find(m => m.model_id === modelId);
+    state.modelHub.selectedModel = model;
+    
+    renderModelInfo(model);
+    document.getElementById('model-load-btn').disabled = false;
+}
+
+function renderModelInfo(model) {
+    const container = document.getElementById('model-info-card');
+    
+    if (!model) {
+        container.innerHTML = `
+            <div class="model-info-placeholder">
+                <p>Select a model from the search results</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = `
+        <div class="model-info-content">
+            <h3>${model.model_id}</h3>
+            ${model.author ? `<p class="model-author">by ${model.author}</p>` : ''}
+            <div class="model-stats">
+                <div class="stat-item">
+                    <span class="stat-value">${formatNumber(model.downloads)}</span>
+                    <span class="stat-label">Downloads</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value">${formatNumber(model.likes)}</span>
+                    <span class="stat-label">Likes</span>
+                </div>
+            </div>
+            ${model.pipeline_tag ? `<div class="model-pipeline">${model.pipeline_tag}</div>` : ''}
+            ${model.tags.length > 0 ? `
+                <div class="model-tags">
+                    ${model.tags.slice(0, 8).map(tag => `<span class="tag">${tag}</span>`).join('')}
+                </div>
+            ` : ''}
+            ${model.is_gated ? `
+                <div class="gated-warning">
+                    <span class="icon">🔒</span>
+                    This model requires authentication. Please provide your HuggingFace token.
+                </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+async function loadSelectedModel() {
+    const model = state.modelHub.selectedModel;
+    if (!model) return;
+    
+    const device = document.getElementById('load-device').value;
+    const dtype = document.getElementById('load-dtype').value;
+    const tokenInput = document.getElementById('hf-token');
+    // Only send manual token if the input is visible and has a value
+    const token = (tokenInput.style.display !== 'none' && tokenInput.value) ? tokenInput.value : null;
+    const trustRemoteCode = document.getElementById('trust-remote-code').checked;
+    
+    state.modelHub.isLoading = true;
+    updateLoadingUI(true);
+    updateModelStatus('downloading', 0, `Downloading ${model.model_id}...`);
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/models/load`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_id: model.model_id,
+                device,
+                dtype,
+                trust_remote_code: trustRemoteCode,
+                token,
+            })
+        });
+        
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error);
+        }
+        
+        const loadedModel = await response.json();
+        state.modelHub.loadedModel = loadedModel;
+        
+        updateModelStatus('ready', 1.0, 'Model loaded successfully');
+        renderLoadedModelInfo(loadedModel);
+        updateLoadingUI(false);
+        
+        // Enable attention test
+        document.getElementById('attention-test-btn').disabled = false;
+        document.getElementById('model-unload-btn').disabled = false;
+        
+    } catch (error) {
+        console.error('Load error:', error);
+        updateModelStatus('error', 0, '', error.message);
+        updateLoadingUI(false);
+    }
+    
+    state.modelHub.isLoading = false;
+}
+
+async function unloadModel() {
+    try {
+        await fetch(`${API_BASE}/api/models/unload`, { method: 'POST' });
+        
+        state.modelHub.loadedModel = null;
+        updateModelStatus('idle', 0, 'Model unloaded');
+        
+        document.getElementById('loaded-model-info').innerHTML = `
+            <div class="no-model-loaded">
+                <div class="placeholder-icon">⬡</div>
+                <p>Load a model to see its details</p>
+            </div>
+        `;
+        
+        // Hide quick actions
+        const quickActions = document.getElementById('quick-actions');
+        if (quickActions) {
+            quickActions.style.display = 'none';
+        }
+        
+        document.getElementById('attention-test-btn').disabled = true;
+        document.getElementById('model-unload-btn').disabled = true;
+        document.getElementById('attention-test-results').innerHTML = `
+            <p class="results-placeholder">Load a model to test attention</p>
+        `;
+        
+        // Update header indicator
+        updateModelIndicator(null);
+        
+        // Show model-required overlays
+        updateModelRequiredOverlays(false);
+        
+    } catch (error) {
+        console.error('Unload error:', error);
+    }
+}
+
+function updateLoadingUI(isLoading) {
+    document.getElementById('model-load-btn').disabled = isLoading || !state.modelHub.selectedModel;
+    document.getElementById('model-search-btn').disabled = isLoading;
+}
+
+function updateModelStatus(status, progress, message, error = null) {
+    const panel = document.getElementById('model-status-panel');
+    
+    const statusIcons = {
+        idle: '○',
+        searching: '⟳',
+        downloading: '↓',
+        loading: '⟳',
+        ready: '●',
+        error: '✕'
+    };
+    
+    const statusClasses = {
+        idle: '',
+        searching: 'loading',
+        downloading: 'loading',
+        loading: 'loading',
+        ready: 'ready',
+        error: 'error'
+    };
+    
+    let html = `
+        <div class="status-${status} ${statusClasses[status]}">
+            <span class="status-icon">${statusIcons[status]}</span>
+            <span>${error || message || 'No model loaded'}</span>
+        </div>
+    `;
+    
+    if (progress > 0 && progress < 1 && (status === 'downloading' || status === 'loading')) {
+        html += `
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${progress * 100}%"></div>
+            </div>
+        `;
+    }
+    
+    panel.innerHTML = html;
+}
+
+function renderLoadedModelInfo(model) {
+    const container = document.getElementById('loaded-model-info');
+    
+    container.innerHTML = `
+        <div class="loaded-model-content">
+            <div class="loaded-header">
+                <span class="status-dot active"></span>
+                <h4>${model.model_id}</h4>
+            </div>
+            <div class="model-specs">
+                <div class="spec-item">
+                    <span class="spec-label">Layers</span>
+                    <span class="spec-value">${model.num_layers}</span>
+                </div>
+                <div class="spec-item">
+                    <span class="spec-label">Heads</span>
+                    <span class="spec-value">${model.num_heads}</span>
+                </div>
+                <div class="spec-item">
+                    <span class="spec-label">Hidden Size</span>
+                    <span class="spec-value">${model.hidden_size}</span>
+                </div>
+                <div class="spec-item">
+                    <span class="spec-label">Vocab Size</span>
+                    <span class="spec-value">${formatNumber(model.vocab_size)}</span>
+                </div>
+                <div class="spec-item">
+                    <span class="spec-label">Device</span>
+                    <span class="spec-value device">${model.device.toUpperCase()}</span>
+                </div>
+                <div class="spec-item">
+                    <span class="spec-label">Precision</span>
+                    <span class="spec-value">${model.dtype}</span>
+                </div>
+                <div class="spec-item full-width">
+                    <span class="spec-label">Memory Usage</span>
+                    <span class="spec-value memory">${model.memory_mb.toFixed(1)} MB</span>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Show quick actions
+    const quickActions = document.getElementById('quick-actions');
+    if (quickActions) {
+        quickActions.style.display = 'block';
+    }
+    
+    // Update model indicator in header
+    updateModelIndicator(model);
+    
+    // Hide model-required overlays
+    updateModelRequiredOverlays(true);
+}
+
+function updateModelIndicator(model) {
+    const indicator = document.getElementById('model-indicator');
+    if (!indicator) return;
+    
+    if (model) {
+        indicator.classList.add('active');
+        indicator.innerHTML = `
+            <span class="indicator-dot active"></span>
+            <span class="indicator-text">${model.model_id}</span>
+        `;
+    } else {
+        indicator.classList.remove('active');
+        indicator.innerHTML = `
+            <span class="indicator-dot"></span>
+            <span class="indicator-text">No model loaded</span>
+        `;
+    }
+}
+
+function updateModelRequiredOverlays(modelLoaded) {
+    const overlays = document.querySelectorAll('.model-required-overlay');
+    overlays.forEach(overlay => {
+        overlay.style.display = modelLoaded ? 'none' : 'flex';
+    });
+}
+
+async function testAttention() {
+    if (!state.modelHub.loadedModel) return;
+    
+    const text = document.getElementById('attention-test-input').value;
+    const layer = parseInt(document.getElementById('attention-layer').value) || -1;
+    const headInput = document.getElementById('attention-head').value;
+    const head = headInput ? parseInt(headInput) : null;
+    
+    const resultsContainer = document.getElementById('attention-test-results');
+    resultsContainer.innerHTML = '<p class="loading">Computing attention...</p>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/models/attention`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, layer, head })
+        });
+        
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error);
+        }
+        
+        const result = await response.json();
+        renderAttentionResults(result);
+        
+    } catch (error) {
+        console.error('Attention error:', error);
+        resultsContainer.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+    }
+}
+
+function renderAttentionResults(result) {
+    const container = document.getElementById('attention-test-results');
+    
+    const tokens = result.tokens;
+    const seqLen = result.seq_len;
+    const isMultiHead = Array.isArray(result.attention_weights[0][0]);
+    
+    let html = `
+        <div class="attention-meta">
+            <span>Layer: ${result.layer}</span>
+            <span>Tokens: ${seqLen}</span>
+            ${result.head !== null ? `<span>Head: ${result.head}</span>` : `<span>Heads: ${result.attention_weights.length}</span>`}
+        </div>
+        <div class="attention-tokens">
+            ${tokens.map((t, i) => `<span class="attn-token" data-idx="${i}">${escapeHtml(t)}</span>`).join('')}
+        </div>
+    `;
+    
+    // Simple heatmap visualization for single head
+    if (!isMultiHead) {
+        const weights = result.attention_weights;
+        html += renderMiniHeatmap(weights, tokens);
+    }
+    
+    container.innerHTML = html;
+}
+
+function renderMiniHeatmap(weights, tokens) {
+    const size = Math.min(weights.length, 32);
+    const cellSize = Math.floor(200 / size);
+    
+    let html = '<div class="mini-heatmap" style="display: grid; grid-template-columns: repeat(' + size + ', ' + cellSize + 'px); gap: 1px;">';
+    
+    for (let i = 0; i < size; i++) {
+        for (let j = 0; j < size; j++) {
+            const value = j <= i ? weights[i][j] : 0;
+            const intensity = Math.floor(value * 255);
+            const color = value > 0.1 
+                ? `rgb(${intensity}, ${Math.floor(intensity * 0.2)}, ${Math.floor(intensity * 0.4)})`
+                : `rgb(${Math.floor(intensity * 0.5)}, ${Math.floor(intensity * 0.5)}, ${Math.floor(intensity * 0.7)})`;
+            html += `<div class="heatmap-cell" style="width: ${cellSize}px; height: ${cellSize}px; background: ${color};" title="${tokens[j]} → ${tokens[i]}: ${value.toFixed(3)}"></div>`;
+        }
+    }
+    
+    html += '</div>';
+    return html;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function checkModelStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/models/status`);
+        if (!response.ok) return;
+        
+        const status = await response.json();
+        
+        if (status.status === 'ready' && status.model_id) {
+            // Model is already loaded, update UI
+            updateModelStatus('ready', 1.0, 'Model loaded');
+            document.getElementById('attention-test-btn').disabled = false;
+            document.getElementById('model-unload-btn').disabled = false;
+            
+            // Show quick actions
+            const quickActions = document.getElementById('quick-actions');
+            if (quickActions) {
+                quickActions.style.display = 'block';
+            }
+            
+            // Update header indicator
+            updateModelIndicator({ model_id: status.model_id });
+            
+            // Hide model-required overlays
+            updateModelRequiredOverlays(true);
+            
+            // Show model info
+            document.getElementById('loaded-model-info').innerHTML = `
+                <div class="loaded-model-content">
+                    <div class="loaded-header">
+                        <span class="status-dot active"></span>
+                        <h4>${status.model_id}</h4>
+                    </div>
+                    <p class="note">Model loaded from previous session</p>
+                </div>
+            `;
+        } else {
+            updateModelStatus(status.status, status.progress, status.message, status.error);
+            // Show model-required overlays since no model is loaded
+            updateModelRequiredOverlays(false);
+        }
+    } catch (error) {
+        // Server not available, show overlays
+        updateModelRequiredOverlays(false);
+    }
+}
+
+// ============================================
+// Architecture View
+// ============================================
+
+// State for architecture view
+const archState = {
+    architecture: null,
+    layerAnalysis: null,
+    allLayersAttention: null,
+    selectedLayer: null,
+};
+
+function initArchitectureView() {
+    document.getElementById('arch-refresh').addEventListener('click', loadArchitecture);
+    document.getElementById('arch-analyze-btn').addEventListener('click', analyzeAllLayers);
+    
+    document.getElementById('layer-view-mode').addEventListener('change', (e) => {
+        if (archState.architecture) {
+            renderLayerVisualization(archState.architecture, e.target.value);
+        }
+    });
+}
+
+async function loadArchitecture() {
+    const modelInfo = document.getElementById('arch-model-info');
+    modelInfo.innerHTML = '<div class="arch-placeholder"><p>Loading architecture...</p></div>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/models/architecture`);
+        if (!response.ok) throw new Error('Failed to load architecture');
+        
+        const arch = await response.json();
+        archState.architecture = arch;
+        
+        renderArchitectureOverview(arch);
+        renderLayerVisualization(arch, 'stack');
+        renderKVCacheMetrics(arch);
+        
+    } catch (error) {
+        console.error('Architecture load error:', error);
+        modelInfo.innerHTML = `<div class="arch-placeholder"><p>Error: ${error.message}</p></div>`;
+    }
+}
+
+function renderArchitectureOverview(arch) {
+    const container = document.getElementById('arch-model-info');
+    
+    const attentionType = arch.attention_config.is_gqa ? 'GQA' : 
+                          (arch.attention_config.is_mqa ? 'MQA' : 'MHA');
+    
+    container.innerHTML = `
+        <div class="arch-model-header">
+            <span class="model-type">${arch.model_type}</span>
+            <div class="model-name">${arch.model_id}</div>
+            <div class="model-params">${arch.total_params_billions.toFixed(2)}B parameters</div>
+        </div>
+        
+        <div class="arch-specs">
+            <div class="arch-spec-item">
+                <div class="arch-spec-value">${arch.num_layers}</div>
+                <div class="arch-spec-label">Layers</div>
+            </div>
+            <div class="arch-spec-item">
+                <div class="arch-spec-value">${arch.num_heads}</div>
+                <div class="arch-spec-label">Attention Heads</div>
+            </div>
+            <div class="arch-spec-item">
+                <div class="arch-spec-value">${arch.hidden_size}</div>
+                <div class="arch-spec-label">Hidden Size</div>
+            </div>
+            <div class="arch-spec-item">
+                <div class="arch-spec-value">${arch.attention_config.head_dim}</div>
+                <div class="arch-spec-label">Head Dimension</div>
+            </div>
+            <div class="arch-spec-item">
+                <div class="arch-spec-value highlight">${formatNumber(arch.vocab_size)}</div>
+                <div class="arch-spec-label">Vocab Size</div>
+            </div>
+            <div class="arch-spec-item">
+                <div class="arch-spec-value">${arch.intermediate_size}</div>
+                <div class="arch-spec-label">FFN Size</div>
+            </div>
+            <div class="arch-spec-item full">
+                <div class="arch-spec-value">${arch.dtype} on ${arch.device.toUpperCase()}</div>
+                <div class="arch-spec-label">Precision & Device</div>
+            </div>
+        </div>
+        
+        <div class="arch-attention-info">
+            <h4>Attention Configuration</h4>
+            <div class="attention-features">
+                <div class="attention-feature">
+                    <span class="feature-name">Attention Type</span>
+                    <span class="feature-value">${attentionType}</span>
+                </div>
+                ${arch.attention_config.num_kv_heads ? `
+                <div class="attention-feature">
+                    <span class="feature-name">KV Heads</span>
+                    <span class="feature-value">${arch.attention_config.num_kv_heads}</span>
+                </div>
+                ` : ''}
+                <div class="attention-feature">
+                    <span class="feature-name">Max Context</span>
+                    <span class="feature-value">${formatNumber(arch.attention_config.max_position_embeddings)}</span>
+                </div>
+                <div class="attention-feature">
+                    <span class="feature-name">RoPE Embeddings</span>
+                    <span class="feature-value ${arch.attention_config.rotary_embedding ? 'yes' : 'no'}">${arch.attention_config.rotary_embedding ? 'Yes' : 'No'}</span>
+                </div>
+                ${arch.sliding_window ? `
+                <div class="attention-feature">
+                    <span class="feature-name">Sliding Window</span>
+                    <span class="feature-value">${arch.sliding_window}</span>
+                </div>
+                ` : ''}
+                ${arch.rope_theta ? `
+                <div class="attention-feature">
+                    <span class="feature-name">RoPE Theta</span>
+                    <span class="feature-value">${arch.rope_theta.toLocaleString()}</span>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function renderLayerVisualization(arch, mode) {
+    const container = document.getElementById('layer-visualization');
+    
+    if (mode === 'stack') {
+        renderStackView(container, arch);
+    } else if (mode === 'grid') {
+        renderGridView(container, arch);
+    } else {
+        renderDetailedView(container, arch);
+    }
+}
+
+function renderStackView(container, arch) {
+    let html = '<div class="layer-stack">';
+    
+    // Embedding layer
+    html += `
+        <div class="layer-block embedding">
+            <span class="layer-index">EMB</span>
+            <div class="layer-components">
+                <div class="layer-component norm">Token Embedding</div>
+                <div class="layer-component norm">Position Embedding</div>
+            </div>
+            <span class="layer-dims">${arch.vocab_size} → ${arch.hidden_size}</span>
+        </div>
+    `;
+    
+    // Transformer layers
+    for (let i = 0; i < arch.num_layers; i++) {
+        const layer = arch.layers[i];
+        html += `
+            <div class="layer-block" data-layer="${i}">
+                <span class="layer-index">L${i}</span>
+                <div class="layer-components">
+                    <div class="layer-component attention">${layer.num_heads}H Attn</div>
+                    <div class="layer-component mlp">MLP</div>
+                    <div class="layer-component norm">LN</div>
+                </div>
+                <span class="layer-dims">${layer.hidden_size}d</span>
+            </div>
+        `;
+    }
+    
+    // Output layer
+    html += `
+        <div class="layer-block output">
+            <span class="layer-index">OUT</span>
+            <div class="layer-components">
+                <div class="layer-component norm">LM Head</div>
+            </div>
+            <span class="layer-dims">${arch.hidden_size} → ${arch.vocab_size}</span>
+        </div>
+    `;
+    
+    html += '</div>';
+    container.innerHTML = html;
+    
+    // Add click handlers
+    container.querySelectorAll('.layer-block[data-layer]').forEach(block => {
+        block.addEventListener('click', () => {
+            const layerIdx = parseInt(block.dataset.layer);
+            selectLayer(layerIdx);
+        });
+    });
+}
+
+function renderGridView(container, arch) {
+    let html = '<div class="layer-grid">';
+    
+    for (let i = 0; i < arch.num_layers; i++) {
+        html += `
+            <div class="layer-grid-item" data-layer="${i}">
+                <span class="layer-num">${i}</span>
+                <span class="layer-type">Block</span>
+            </div>
+        `;
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
+    
+    container.querySelectorAll('.layer-grid-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const layerIdx = parseInt(item.dataset.layer);
+            selectLayer(layerIdx);
+        });
+    });
+}
+
+function renderDetailedView(container, arch) {
+    // Show detailed view with expandable sections
+    let html = '<div class="layer-detailed">';
+    
+    for (let i = 0; i < Math.min(arch.num_layers, 12); i++) {
+        const layer = arch.layers[i];
+        html += `
+            <div class="layer-detailed-item" data-layer="${i}">
+                <div class="layer-detailed-header">
+                    <span class="layer-num">Layer ${i}</span>
+                    <span class="layer-type">${layer.attention_type}</span>
+                </div>
+                <div class="layer-detailed-body">
+                    <div class="detail-row">
+                        <span>Attention</span>
+                        <span>${layer.num_heads} heads × ${layer.head_dim} dim</span>
+                    </div>
+                    <div class="detail-row">
+                        <span>FFN</span>
+                        <span>${layer.hidden_size} → ${layer.intermediate_size} → ${layer.hidden_size}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    if (arch.num_layers > 12) {
+        html += `<div class="layer-more">... and ${arch.num_layers - 12} more layers</div>`;
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function selectLayer(layerIdx) {
+    archState.selectedLayer = layerIdx;
+    
+    // Update UI selection
+    document.querySelectorAll('.layer-block, .layer-grid-item').forEach(el => {
+        el.classList.toggle('selected', parseInt(el.dataset.layer) === layerIdx);
+    });
+    
+    // Could show layer-specific details here
+}
+
+function renderKVCacheMetrics(arch) {
+    const container = document.getElementById('kv-cache-metrics');
+    const projectionContainer = document.getElementById('memory-projection');
+    
+    const metrics = arch.kv_cache_metrics;
+    
+    container.innerHTML = `
+        <div class="kv-metric-card">
+            <h4>KV Cache per Token</h4>
+            <div class="kv-metric-value">${formatBytes(metrics.bytes_per_token)}</div>
+            <div class="kv-metric-sub">per token across all layers</div>
+        </div>
+        
+        <div class="kv-metric-card">
+            <h4>Cache at 2K Context</h4>
+            <div class="kv-metric-value">${formatBytes(metrics.total_kv_cache_bytes)}</div>
+            <div class="kv-metric-sub">2048 tokens × ${arch.num_layers} layers</div>
+        </div>
+        
+        <div class="kv-metric-card">
+            <h4>Model Parameters</h4>
+            <div class="kv-metric-value">${formatBytes(metrics.model_params_bytes)}</div>
+            <div class="kv-metric-sub">${arch.total_params_billions.toFixed(2)}B params</div>
+        </div>
+        
+        <div class="kv-metric-card">
+            <h4>Cache / Model Ratio</h4>
+            <div class="kv-metric-value ${metrics.kv_cache_ratio > 0.5 ? 'warning' : ''}">${(metrics.kv_cache_ratio * 100).toFixed(1)}%</div>
+            <div class="kv-metric-sub">at 2K context</div>
+        </div>
+        
+        <div class="kv-metric-card">
+            <h4>Theoretical Max Context</h4>
+            <div class="kv-metric-value">${formatNumber(metrics.theoretical_max_context)}</div>
+            <div class="kv-metric-sub">on 80GB GPU</div>
+        </div>
+    `;
+    
+    // Render memory projection chart
+    const seqLengths = Object.keys(metrics.memory_at_seq_lengths).map(Number).sort((a, b) => a - b);
+    const maxMemory = Math.max(...Object.values(metrics.memory_at_seq_lengths));
+    
+    let chartHtml = '<div class="projection-bars">';
+    
+    for (const seqLen of seqLengths.slice(0, 7)) {
+        const memory = metrics.memory_at_seq_lengths[seqLen];
+        const heightPercent = (memory / maxMemory) * 100;
+        
+        chartHtml += `
+            <div class="projection-bar">
+                <div class="projection-bar-fill" style="height: ${heightPercent}%"></div>
+                <div class="projection-bar-label">${formatSeqLen(seqLen)}</div>
+            </div>
+        `;
+    }
+    
+    chartHtml += '</div>';
+    chartHtml += `
+        <div class="projection-legend">
+            <span>KV Cache memory at different sequence lengths</span>
+        </div>
+    `;
+    
+    projectionContainer.innerHTML = chartHtml;
+}
+
+function formatSeqLen(len) {
+    if (len >= 1024) return `${len / 1024}K`;
+    return len.toString();
+}
+
+async function analyzeAllLayers() {
+    const text = document.getElementById('arch-sample-text').value.trim();
+    if (!text) {
+        alert('Please enter sample text to analyze');
+        return;
+    }
+    
+    const gridContainer = document.getElementById('layer-attention-grid');
+    const statsContainer = document.getElementById('layer-stats-grid');
+    
+    gridContainer.innerHTML = '<div class="analysis-placeholder"><p>Analyzing attention across layers...</p></div>';
+    statsContainer.innerHTML = '';
+    
+    try {
+        // Get attention from all layers
+        const response = await fetch(`${API_BASE}/api/models/all-layers-attention`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        
+        if (!response.ok) throw new Error('Failed to get attention');
+        
+        const result = await response.json();
+        archState.allLayersAttention = result;
+        
+        renderLayerAttentionGrid(result);
+        
+        // Get layer statistics
+        const statsResponse = await fetch(`${API_BASE}/api/models/layer-analysis`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        
+        if (statsResponse.ok) {
+            const stats = await statsResponse.json();
+            archState.layerAnalysis = stats;
+            renderLayerStats(stats);
+        }
+        
+    } catch (error) {
+        console.error('Analysis error:', error);
+        gridContainer.innerHTML = `<div class="analysis-placeholder"><p>Error: ${error.message}</p></div>`;
+    }
+}
+
+function renderLayerAttentionGrid(result) {
+    const container = document.getElementById('layer-attention-grid');
+    
+    let html = '';
+    
+    for (const layer of result.layers) {
+        html += `
+            <div class="layer-attention-item" data-layer="${layer.layer}">
+                <span class="layer-label">Layer ${layer.layer}</span>
+                <div class="layer-heatmap-mini">
+                    <canvas id="layer-mini-${layer.layer}" width="80" height="80"></canvas>
+                </div>
+            </div>
+        `;
+    }
+    
+    container.innerHTML = html;
+    
+    // Render mini heatmaps
+    for (const layer of result.layers) {
+        renderMiniHeatmap(`layer-mini-${layer.layer}`, layer.attention, result.seq_len);
+    }
+    
+    // Add click handlers
+    container.querySelectorAll('.layer-attention-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const layerIdx = parseInt(item.dataset.layer);
+            showLayerDetail(layerIdx);
+        });
+    });
+}
+
+function renderMiniHeatmap(canvasId, attention, seqLen) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const size = 80;
+    const cellSize = size / seqLen;
+    
+    for (let i = 0; i < seqLen; i++) {
+        for (let j = 0; j < seqLen; j++) {
+            const value = j <= i ? attention[i][j] : 0;
+            const color = getHeatmapColor(value);
+            
+            ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+            ctx.fillRect(j * cellSize, i * cellSize, cellSize + 1, cellSize + 1);
+        }
+    }
+}
+
+function showLayerDetail(layerIdx) {
+    // Select the layer
+    document.querySelectorAll('.layer-attention-item').forEach(item => {
+        item.classList.toggle('selected', parseInt(item.dataset.layer) === layerIdx);
+    });
+    
+    // Could show detailed view in a modal or side panel
+    console.log('Selected layer:', layerIdx);
+}
+
+function renderLayerStats(stats) {
+    const container = document.getElementById('layer-stats-grid');
+    
+    const avgEntropy = stats.average_entropy;
+    const avgSparsity = stats.average_sparsity;
+    
+    const sinkPositions = stats.sink_positions.slice(0, 5).join(', ');
+    const heavyPositions = stats.heavy_hitter_positions.slice(0, 5).join(', ') || 'None';
+    
+    container.innerHTML = `
+        <div class="layer-stat-item">
+            <div class="layer-stat-value good">${avgEntropy.toFixed(2)}</div>
+            <div class="layer-stat-label">Avg Entropy</div>
+        </div>
+        <div class="layer-stat-item">
+            <div class="layer-stat-value medium">${(avgSparsity * 100).toFixed(1)}%</div>
+            <div class="layer-stat-label">Avg Sparsity</div>
+        </div>
+        <div class="layer-stat-item">
+            <div class="layer-stat-value high">${stats.sink_positions.length}</div>
+            <div class="layer-stat-label">Sink Positions</div>
+        </div>
+        <div class="layer-stat-item">
+            <div class="layer-stat-value">${stats.heavy_hitter_positions.length}</div>
+            <div class="layer-stat-label">Heavy Hitters</div>
+        </div>
+        <div class="layer-stat-item">
+            <div class="layer-stat-value">${stats.layer_stats.length}</div>
+            <div class="layer-stat-label">Total Layers</div>
+        </div>
+    `;
+}
+
+// ============================================
+// Playground View
+// ============================================
+
+function initPlaygroundView() {
+    document.getElementById('playground-generate').addEventListener('click', generateText);
+    document.getElementById('playground-clear').addEventListener('click', clearPlayground);
+    
+    // Temperature slider
+    const tempSlider = document.getElementById('gen-temperature');
+    const tempValue = document.getElementById('gen-temperature-value');
+    tempSlider.addEventListener('input', () => {
+        tempValue.textContent = (parseInt(tempSlider.value) / 100).toFixed(2);
+    });
+    
+    // Top-P slider
+    const topPSlider = document.getElementById('gen-top-p');
+    const topPValue = document.getElementById('gen-top-p-value');
+    topPSlider.addEventListener('input', () => {
+        topPValue.textContent = (parseInt(topPSlider.value) / 100).toFixed(2);
+    });
+}
+
+async function generateText() {
+    const prompt = document.getElementById('playground-prompt').value.trim();
+    if (!prompt) {
+        alert('Please enter a prompt');
+        return;
+    }
+    
+    const outputContainer = document.getElementById('playground-output');
+    const statsContainer = document.getElementById('generation-stats');
+    
+    // Show loading
+    outputContainer.innerHTML = `
+        <div class="output-loading">
+            <div class="spinner"></div>
+            <span>Generating...</span>
+        </div>
+    `;
+    statsContainer.innerHTML = '';
+    
+    // Get generation settings
+    const maxTokens = parseInt(document.getElementById('gen-max-tokens').value) || 50;
+    const temperature = parseInt(document.getElementById('gen-temperature').value) / 100;
+    const topP = parseInt(document.getElementById('gen-top-p').value) / 100;
+    const topK = parseInt(document.getElementById('gen-top-k').value) || 50;
+    const doSample = document.getElementById('gen-do-sample').checked;
+    
+    const startTime = Date.now();
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/models/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt,
+                max_new_tokens: maxTokens,
+                temperature,
+                top_p: topP,
+                top_k: topK,
+                do_sample: doSample,
+            })
+        });
+        
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error);
+        }
+        
+        const result = await response.json();
+        const elapsed = Date.now() - startTime;
+        
+        // Display result
+        outputContainer.innerHTML = `
+            <div class="output-text">
+                <span class="prompt-part">${escapeHtml(result.prompt)}</span><span class="generated-part">${escapeHtml(result.generated)}</span>
+            </div>
+        `;
+        
+        // Show stats
+        const tokensPerSec = (result.tokens_generated / (elapsed / 1000)).toFixed(1);
+        statsContainer.innerHTML = `
+            <span><span class="stat-label">Tokens:</span> ${result.tokens_generated}</span>
+            <span><span class="stat-label">Time:</span> ${(elapsed / 1000).toFixed(2)}s</span>
+            <span><span class="stat-label">Speed:</span> ${tokensPerSec} tok/s</span>
+        `;
+        
+    } catch (error) {
+        console.error('Generation error:', error);
+        outputContainer.innerHTML = `
+            <div class="output-error" style="color: var(--sink-color);">
+                Error: ${error.message}
+            </div>
+        `;
+    }
+}
+
+function clearPlayground() {
+    document.getElementById('playground-prompt').value = '';
+    document.getElementById('playground-output').innerHTML = `
+        <p class="output-placeholder">Generated text will appear here...</p>
+    `;
+    document.getElementById('generation-stats').innerHTML = '';
 }
 
