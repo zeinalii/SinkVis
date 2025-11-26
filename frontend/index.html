@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SinkVis — Attention Sink & KV Cache Visualizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2" y="2" width="36" height="36" rx="8" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="10" cy="10" r="4" fill="var(--sink-color)"/>
+                        <circle cx="20" cy="14" r="3" fill="var(--heavy-hitter-color)"/>
+                        <circle cx="30" cy="12" r="2" fill="var(--text-muted)"/>
+                        <path d="M8 25 L32 25 M8 30 L28 30 M8 35 L24 35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>SinkVis</h1>
+                    <span class="tagline">Attention Sink & KV Cache Visualizer</span>
+                </div>
+            </div>
+            <nav class="nav">
+                <button class="nav-btn active" data-view="stream">
+                    <span class="icon">◉</span> Live Stream
+                </button>
+                <button class="nav-btn" data-view="simulate">
+                    <span class="icon">⚙</span> Eviction Sim
+                </button>
+                <button class="nav-btn" data-view="profile">
+                    <span class="icon">▤</span> Cache Profile
+                </button>
+            </nav>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Live Streaming View -->
+            <section id="stream-view" class="view active">
+                <div class="view-header">
+                    <h2>Live Attention Stream</h2>
+                    <div class="controls">
+                        <button id="stream-start" class="btn btn-primary">
+                            <span class="icon">▶</span> Start
+                        </button>
+                        <button id="stream-stop" class="btn btn-secondary" disabled>
+                            <span class="icon">⏹</span> Stop
+                        </button>
+                        <button id="stream-step" class="btn btn-ghost">
+                            <span class="icon">→</span> Step
+                        </button>
+                        <button id="stream-reset" class="btn btn-ghost">
+                            <span class="icon">↺</span> Reset
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stream-layout">
+                    <div class="heatmap-container">
+                        <div class="heatmap-header">
+                            <h3>Attention Heatmap</h3>
+                            <div class="legend">
+                                <span class="legend-item sink">◆ Sink</span>
+                                <span class="legend-item heavy">◆ Heavy Hitter</span>
+                            </div>
+                        </div>
+                        <div id="attention-heatmap" class="heatmap">
+                            <div class="heatmap-placeholder">
+                                <p>Start streaming to visualize attention patterns</p>
+                            </div>
+                        </div>
+                        <div class="heatmap-axes">
+                            <span class="axis-label y-label">Query Position →</span>
+                            <span class="axis-label x-label">Key Position →</span>
+                        </div>
+                    </div>
+
+                    <div class="stream-sidebar">
+                        <div class="token-list">
+                            <h3>Token Sequence</h3>
+                            <div id="token-container" class="tokens">
+                                <span class="token-placeholder">Tokens will appear here...</span>
+                            </div>
+                        </div>
+
+                        <div class="stream-stats">
+                            <h3>Statistics</h3>
+                            <div class="stat-grid">
+                                <div class="stat">
+                                    <span class="stat-value" id="stat-seq-len">0</span>
+                                    <span class="stat-label">Sequence Length</span>
+                                </div>
+                                <div class="stat">
+                                    <span class="stat-value" id="stat-sinks">0</span>
+                                    <span class="stat-label">Attention Sinks</span>
+                                </div>
+                                <div class="stat">
+                                    <span class="stat-value" id="stat-heavy">0</span>
+                                    <span class="stat-label">Heavy Hitters</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="stream-config">
+                            <h3>Configuration</h3>
+                            <div class="config-group">
+                                <label>Update Interval (ms)</label>
+                                <input type="range" id="config-interval" min="50" max="1000" value="200">
+                                <span id="config-interval-value">200</span>
+                            </div>
+                            <div class="config-group">
+                                <label>Sink Threshold</label>
+                                <input type="range" id="config-sink-threshold" min="0" max="100" value="10">
+                                <span id="config-sink-threshold-value">0.10</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Eviction Simulation View -->
+            <section id="simulate-view" class="view">
+                <div class="view-header">
+                    <h2>Eviction Policy Simulation</h2>
+                </div>
+
+                <div class="simulate-layout">
+                    <div class="simulate-input">
+                        <div class="input-group">
+                            <label>Prompt Text</label>
+                            <textarea id="sim-prompt" placeholder="Enter a prompt to simulate attention patterns and cache eviction...">The transformer architecture has revolutionized natural language processing by introducing self-attention mechanisms that allow models to weigh the importance of different parts of the input sequence. Key-value caches store the computed key and value projections from previous tokens, enabling efficient autoregressive generation without recomputing attention for the entire sequence at each step.</textarea>
+                        </div>
+
+                        <div class="config-row">
+                            <div class="input-group">
+                                <label>Eviction Policy</label>
+                                <select id="sim-policy">
+                                    <option value="streaming_llm">StreamingLLM</option>
+                                    <option value="h2o">H2O (Heavy-Hitter Oracle)</option>
+                                    <option value="lru">Least Recently Used</option>
+                                    <option value="sliding_window">Sliding Window</option>
+                                    <option value="full">Full Cache (No Eviction)</option>
+                                </select>
+                            </div>
+                            <div class="input-group">
+                                <label>Cache Size (tokens)</label>
+                                <input type="number" id="sim-cache-size" value="256" min="64" max="8192">
+                            </div>
+                            <div class="input-group">
+                                <label>Sink Count</label>
+                                <input type="number" id="sim-sink-count" value="4" min="0" max="64">
+                            </div>
+                            <div class="input-group">
+                                <label>Window Size</label>
+                                <input type="number" id="sim-window-size" value="128" min="32" max="4096">
+                            </div>
+                        </div>
+
+                        <div class="button-row">
+                            <button id="sim-run" class="btn btn-primary">
+                                <span class="icon">▶</span> Run Simulation
+                            </button>
+                            <button id="sim-compare" class="btn btn-secondary">
+                                <span class="icon">⇄</span> Compare All Policies
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="simulate-results" id="sim-results">
+                        <div class="results-placeholder">
+                            <div class="placeholder-icon">⚙</div>
+                            <p>Configure and run a simulation to see results</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cache Profile View -->
+            <section id="profile-view" class="view">
+                <div class="view-header">
+                    <h2>Hierarchical Cache Profile</h2>
+                    <div class="controls">
+                        <button id="profile-refresh" class="btn btn-primary">
+                            <span class="icon">↻</span> Refresh
+                        </button>
+                        <div class="input-group inline">
+                            <label>Sequence Length</label>
+                            <input type="number" id="profile-seq-len" value="512" min="64" max="4096">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="profile-layout">
+                    <div class="memory-hierarchy">
+                        <h3>Memory Hierarchy</h3>
+                        <div class="memory-tiers">
+                            <div class="memory-tier" data-tier="gpu_hbm">
+                                <div class="tier-header">
+                                    <span class="tier-icon gpu">▮</span>
+                                    <span class="tier-name">GPU HBM</span>
+                                    <span class="tier-size" id="tier-gpu-hbm-size">0 KB</span>
+                                </div>
+                                <div class="tier-bar">
+                                    <div class="tier-fill" id="tier-gpu-hbm-bar"></div>
+                                </div>
+                                <div class="tier-blocks" id="tier-gpu-hbm-blocks"></div>
+                            </div>
+                            <div class="memory-tier" data-tier="gpu_l2">
+                                <div class="tier-header">
+                                    <span class="tier-icon cache">▮</span>
+                                    <span class="tier-name">GPU L2 Cache</span>
+                                    <span class="tier-size" id="tier-gpu-l2-size">0 KB</span>
+                                </div>
+                                <div class="tier-bar">
+                                    <div class="tier-fill" id="tier-gpu-l2-bar"></div>
+                                </div>
+                                <div class="tier-blocks" id="tier-gpu-l2-blocks"></div>
+                            </div>
+                            <div class="memory-tier" data-tier="system_ram">
+                                <div class="tier-header">
+                                    <span class="tier-icon ram">▮</span>
+                                    <span class="tier-name">System RAM</span>
+                                    <span class="tier-size" id="tier-system-ram-size">0 KB</span>
+                                </div>
+                                <div class="tier-bar">
+                                    <div class="tier-fill" id="tier-system-ram-bar"></div>
+                                </div>
+                                <div class="tier-blocks" id="tier-system-ram-blocks"></div>
+                            </div>
+                            <div class="memory-tier" data-tier="disk">
+                                <div class="tier-header">
+                                    <span class="tier-icon disk">▮</span>
+                                    <span class="tier-name">Disk / Offloaded</span>
+                                    <span class="tier-size" id="tier-disk-size">0 KB</span>
+                                </div>
+                                <div class="tier-bar">
+                                    <div class="tier-fill" id="tier-disk-bar"></div>
+                                </div>
+                                <div class="tier-blocks" id="tier-disk-blocks"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="cache-blocks-view">
+                        <h3>Cache Block Map</h3>
+                        <div id="block-map" class="block-map">
+                            <div class="block-map-placeholder">
+                                <p>Click Refresh to load cache profile</p>
+                            </div>
+                        </div>
+                        <div class="block-legend">
+                            <span class="legend-item sink">◆ Contains Sink</span>
+                            <span class="legend-item heavy">◆ Contains Heavy Hitter</span>
+                            <span class="legend-item normal">◆ Normal Block</span>
+                        </div>
+                    </div>
+
+                    <div class="block-details">
+                        <h3>Block Details</h3>
+                        <div id="block-info" class="block-info">
+                            <p class="info-placeholder">Hover over a block to see details</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-content">
+                <span>SinkVis v1.0 — Attention Sink & KV Cache Visualizer</span>
+                <span class="connection-status" id="connection-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Disconnected</span>
+                </span>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
