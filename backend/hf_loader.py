@@ -1,15 +1,61 @@
 """Hugging Face model loader for SinkVis."""
 
 import os
+import io
+import base64
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 import threading
 
 import torch
 from huggingface_hub import HfApi, model_info
 from pydantic import BaseModel, Field
+
+
+class ModelType(str, Enum):
+    """Type of model loaded."""
+    
+    CAUSAL_LM = "causal_lm"
+    DIFFUSION = "diffusion"
+    UNKNOWN = "unknown"
+
+
+def detect_model_type(model_id: str) -> ModelType:
+    """Detect the type of model from its ID or info."""
+    try:
+        info = model_info(model_id)
+        pipeline_tag = info.pipeline_tag or ""
+        tags = info.tags or []
+        library = info.library_name or ""
+        
+        # Check for diffusion models
+        diffusion_indicators = [
+            "text-to-image",
+            "image-to-image", 
+            "diffusers",
+            "stable-diffusion",
+            "sdxl",
+        ]
+        
+        for indicator in diffusion_indicators:
+            if indicator in pipeline_tag.lower():
+                return ModelType.DIFFUSION
+            if indicator in library.lower():
+                return ModelType.DIFFUSION
+            if any(indicator in tag.lower() for tag in tags):
+                return ModelType.DIFFUSION
+        
+        # Check for causal LM
+        if pipeline_tag in ["text-generation", "text2text-generation"]:
+            return ModelType.CAUSAL_LM
+        if library in ["transformers"]:
+            return ModelType.CAUSAL_LM
+        
+        return ModelType.UNKNOWN
+    except Exception:
+        return ModelType.UNKNOWN
 
 
 class TokenSource(str, Enum):
@@ -157,13 +203,17 @@ class LoadedModel(BaseModel):
     """Information about a loaded model."""
     
     model_id: str
-    num_layers: int
-    num_heads: int
-    hidden_size: int
-    vocab_size: int
-    dtype: str
-    device: str
-    memory_mb: float
+    model_type: ModelType = ModelType.CAUSAL_LM
+    num_layers: int = 0
+    num_heads: int = 0
+    hidden_size: int = 0
+    vocab_size: int = 0
+    dtype: str = "unknown"
+    device: str = "cpu"
+    memory_mb: float = 0.0
+    # Diffusion-specific fields
+    image_size: Optional[int] = None
+    num_inference_steps: int = 20
 
 
 @dataclass
@@ -172,7 +222,9 @@ class HFModelLoader:
     
     model: Optional[object] = None
     tokenizer: Optional[object] = None
+    pipeline: Optional[object] = None  # For diffusion models
     model_id: Optional[str] = None
+    model_type: ModelType = ModelType.UNKNOWN
     status: ModelStatus = ModelStatus.IDLE
     progress: float = 0.0
     message: str = ""
@@ -318,7 +370,7 @@ class HFModelLoader:
         self._update_progress(
             ModelStatus.DOWNLOADING,
             0.1,
-            f"Downloading {model_id}...",
+            f"Detecting model type for {model_id}...",
         )
         self.model_id = model_id
         
@@ -333,6 +385,123 @@ class HFModelLoader:
                     f"Using token from {source.value}...",
                 )
         
+        # Detect model type
+        self.model_type = detect_model_type(model_id)
+        
+        if self.model_type == ModelType.DIFFUSION:
+            return self._load_diffusion_model(model_id, device, dtype, token)
+        else:
+            return self._load_causal_lm(model_id, device, dtype, trust_remote_code, token)
+    
+    def _load_diffusion_model(
+        self,
+        model_id: str,
+        device: str,
+        dtype: str,
+        token: Optional[str],
+    ) -> LoadedModel:
+        """Load a diffusion model (Stable Diffusion, etc.)."""
+        try:
+            from diffusers import DiffusionPipeline, AutoPipelineForText2Image
+            
+            self._update_progress(
+                ModelStatus.DOWNLOADING,
+                0.2,
+                "Loading diffusion pipeline...",
+            )
+            
+            # Determine device
+            if device == "auto":
+                if torch.cuda.is_available():
+                    device = "cuda"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
+            
+            # Determine dtype
+            torch_dtype = torch.float16 if device != "cpu" else torch.float32
+            if dtype == "float32":
+                torch_dtype = torch.float32
+            elif dtype == "bfloat16":
+                torch_dtype = torch.bfloat16
+            
+            self._update_progress(
+                ModelStatus.LOADING,
+                0.5,
+                f"Loading pipeline to {device}...",
+            )
+            
+            # Try AutoPipelineForText2Image first, then fallback to DiffusionPipeline
+            try:
+                self.pipeline = AutoPipelineForText2Image.from_pretrained(
+                    model_id,
+                    torch_dtype=torch_dtype,
+                    token=token,
+                    safety_checker=None,  # Disable safety checker for faster loading
+                )
+            except Exception:
+                self.pipeline = DiffusionPipeline.from_pretrained(
+                    model_id,
+                    torch_dtype=torch_dtype,
+                    token=token,
+                )
+            
+            self.pipeline = self.pipeline.to(device)
+            
+            # Try to enable memory optimizations
+            if hasattr(self.pipeline, 'enable_attention_slicing'):
+                self.pipeline.enable_attention_slicing()
+            
+            # Get image size from config
+            image_size = 512
+            if hasattr(self.pipeline, 'unet') and hasattr(self.pipeline.unet, 'config'):
+                unet_config = self.pipeline.unet.config
+                image_size = getattr(unet_config, 'sample_size', 64) * 8
+            
+            # Calculate memory (rough estimate)
+            memory_mb = 0.0
+            if hasattr(self.pipeline, 'unet'):
+                memory_mb += sum(p.numel() * p.element_size() for p in self.pipeline.unet.parameters()) / (1024 * 1024)
+            if hasattr(self.pipeline, 'vae'):
+                memory_mb += sum(p.numel() * p.element_size() for p in self.pipeline.vae.parameters()) / (1024 * 1024)
+            if hasattr(self.pipeline, 'text_encoder'):
+                memory_mb += sum(p.numel() * p.element_size() for p in self.pipeline.text_encoder.parameters()) / (1024 * 1024)
+            
+            self._update_progress(
+                ModelStatus.READY,
+                1.0,
+                f"Diffusion model loaded successfully",
+            )
+            
+            return LoadedModel(
+                model_id=model_id,
+                model_type=ModelType.DIFFUSION,
+                dtype=str(torch_dtype).split('.')[-1],
+                device=device,
+                memory_mb=round(memory_mb, 2),
+                image_size=image_size,
+            )
+            
+        except Exception as e:
+            self._update_progress(
+                ModelStatus.ERROR,
+                0.0,
+                "",
+                str(e),
+            )
+            self.pipeline = None
+            raise
+    
+    def _load_causal_lm(
+        self,
+        model_id: str,
+        device: str,
+        dtype: str,
+        trust_remote_code: bool,
+        token: Optional[str],
+    ) -> LoadedModel:
+        """Load a causal language model."""
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
             
@@ -404,6 +573,7 @@ class HFModelLoader:
                 self.model = self.model.to(device)
             
             self.model.eval()
+            self.model_type = ModelType.CAUSAL_LM
             
             # Calculate memory usage
             param_bytes = sum(
@@ -430,6 +600,7 @@ class HFModelLoader:
             
             return LoadedModel(
                 model_id=model_id,
+                model_type=ModelType.CAUSAL_LM,
                 num_layers=num_layers,
                 num_heads=num_heads,
                 hidden_size=hidden_size,
@@ -459,7 +630,11 @@ class HFModelLoader:
             if self.tokenizer is not None:
                 del self.tokenizer
                 self.tokenizer = None
+            if self.pipeline is not None:
+                del self.pipeline
+                self.pipeline = None
             self.model_id = None
+            self.model_type = ModelType.UNKNOWN
             
             # Force garbage collection
             import gc
@@ -469,6 +644,90 @@ class HFModelLoader:
                 torch.cuda.empty_cache()
             
             self._update_progress(ModelStatus.IDLE, 0.0, "Model unloaded")
+    
+    def generate_image(
+        self,
+        prompt: str,
+        negative_prompt: str = "",
+        num_inference_steps: int = 20,
+        guidance_scale: float = 7.5,
+        width: int = 512,
+        height: int = 512,
+        seed: Optional[int] = None,
+    ) -> str:
+        """
+        Generate an image using the loaded diffusion model.
+        
+        Args:
+            prompt: Text prompt for image generation
+            negative_prompt: Negative prompt to avoid certain features
+            num_inference_steps: Number of denoising steps
+            guidance_scale: Classifier-free guidance scale
+            width: Output image width
+            height: Output image height
+            seed: Random seed for reproducibility
+        
+        Returns:
+            Base64-encoded PNG image
+        """
+        if self.pipeline is None:
+            raise ValueError("No diffusion model loaded")
+        
+        # Set seed for reproducibility
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=self.pipeline.device).manual_seed(seed)
+        
+        # Generate image
+        result = self.pipeline(
+            prompt=prompt,
+            negative_prompt=negative_prompt if negative_prompt else None,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            width=width,
+            height=height,
+            generator=generator,
+        )
+        
+        image = result.images[0]
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        
+        return image_base64
+    
+    def get_cross_attention(
+        self,
+        prompt: str,
+        num_inference_steps: int = 10,
+    ) -> dict:
+        """
+        Get cross-attention maps from the diffusion model.
+        
+        This is useful for visualizing which parts of the prompt
+        influence which parts of the generated image.
+        
+        Args:
+            prompt: Text prompt
+            num_inference_steps: Number of steps (fewer = faster)
+        
+        Returns:
+            Dictionary with cross-attention data
+        """
+        if self.pipeline is None:
+            raise ValueError("No diffusion model loaded")
+        
+        # This is a simplified version - full implementation would require
+        # hooking into the UNet's cross-attention layers
+        # For now, return basic info
+        return {
+            "prompt": prompt,
+            "model_id": self.model_id,
+            "note": "Cross-attention visualization requires model-specific hooks",
+        }
     
     def get_attention_weights(
         self,
@@ -538,7 +797,13 @@ class HFModelLoader:
     
     def is_model_loaded(self) -> bool:
         """Check if a model is currently loaded."""
+        if self.model_type == ModelType.DIFFUSION:
+            return self.pipeline is not None
         return self.model is not None and self.tokenizer is not None
+    
+    def is_diffusion_model(self) -> bool:
+        """Check if the loaded model is a diffusion model."""
+        return self.model_type == ModelType.DIFFUSION and self.pipeline is not None
 
 
 # Global loader instance

@@ -98,6 +98,11 @@ function switchView(viewName) {
     if (viewName === 'architecture' && state.modelHub.loadedModel && !archState.architecture) {
         loadArchitecture();
     }
+    
+    // Check model type when switching to playground
+    if (viewName === 'playground' && state.modelHub.loadedModel) {
+        checkModelType();
+    }
 }
 
 // ============================================
@@ -713,44 +718,142 @@ function formatPolicyName(policy) {
 
 function initProfileView() {
     document.getElementById('profile-refresh').addEventListener('click', loadCacheProfile);
+    // Auto-refresh when seq length changes
+    document.getElementById('profile-seq-len').addEventListener('change', loadCacheProfile);
+    
+    // Handle prompt input - update seq length estimate as user types
+    const promptInput = document.getElementById('profile-prompt');
+    promptInput.addEventListener('input', () => {
+        const prompt = promptInput.value.trim();
+        if (prompt) {
+            // Rough token estimate: ~4 chars per token on average
+            const estimatedTokens = Math.max(64, Math.ceil(prompt.length / 4) + 10);
+            document.getElementById('profile-seq-len').value = estimatedTokens;
+        }
+    });
 }
 
 async function loadCacheProfile() {
+    const promptText = document.getElementById('profile-prompt').value.trim();
     const seqLen = parseInt(document.getElementById('profile-seq-len').value);
     
     try {
-        const response = await fetch(`${API_BASE}/api/cache-profile?seq_len=${seqLen}`);
-        const profile = await response.json();
-        renderCacheProfile(profile);
+        // Build the URL with parameters
+        let profileUrl = `${API_BASE}/api/cache-profile?seq_len=${seqLen}`;
+        if (promptText) {
+            profileUrl += `&prompt=${encodeURIComponent(promptText)}`;
+        }
+        
+        // Fetch both cache profile and architecture data in parallel
+        const [profileRes, archRes] = await Promise.all([
+            fetch(profileUrl),
+            state.modelHub.loadedModel ? fetch(`${API_BASE}/api/models/architecture`) : Promise.resolve(null)
+        ]);
+        
+        const profile = await profileRes.json();
+        const architecture = archRes ? await archRes.json().catch(() => null) : null;
+        
+        // Use actual token count from profile if available
+        const actualSeqLen = profile.total_tokens || seqLen;
+        
+        renderCacheProfileEnhanced(profile, architecture, actualSeqLen);
     } catch (error) {
         console.error('Profile error:', error);
     }
 }
 
-function renderCacheProfile(profile) {
-    // Calculate total memory
-    const totalMemory = Object.values(profile.memory_usage).reduce((a, b) => a + b, 0);
+function renderCacheProfileEnhanced(profile, architecture, seqLen) {
+    // Calculate total memory from tier breakdown
+    const totalTierMemory = Object.values(profile.memory_usage).reduce((a, b) => a + b, 0);
     
-    // Update tier sizes and bars
+    // Get architecture metrics if available
+    const kvMetrics = architecture?.kv_cache_metrics;
+    const numLayers = architecture?.num_layers || 6;
+    const numHeads = architecture?.num_heads || 12;
+    const hiddenSize = architecture?.hidden_size || 768;
+    const modelParamsBytes = kvMetrics?.model_params_bytes || 0;
+    const maxContext = architecture?.attention_config?.max_position_embeddings || 2048;
+    
+    // Calculate KV cache size for current sequence length
+    const bytesPerToken = kvMetrics?.bytes_per_token || (2 * 2 * numLayers * hiddenSize);
+    const kvCacheSize = bytesPerToken * seqLen;
+    const kvPerLayer = kvCacheSize / numLayers;
+    
+    // Update summary metrics
+    document.getElementById('profile-total-kv').textContent = formatBytes(kvCacheSize);
+    document.getElementById('profile-total-kv-detail').textContent = `${seqLen.toLocaleString()} tokens`;
+    
+    document.getElementById('profile-per-token').textContent = formatBytes(bytesPerToken);
+    
+    document.getElementById('profile-per-layer').textContent = formatBytes(kvPerLayer);
+    document.getElementById('profile-per-layer-detail').textContent = `${numLayers} layers`;
+    
+    document.getElementById('profile-model-mem').textContent = formatBytesCompact(modelParamsBytes);
+    document.getElementById('profile-model-mem-detail').textContent = architecture ? 
+        `${(architecture.total_params_billions || 0).toFixed(2)}B params` : 'No model loaded';
+    
+    // Cache to model ratio
+    const ratio = modelParamsBytes > 0 ? (kvCacheSize / modelParamsBytes * 100).toFixed(1) : '--';
+    document.getElementById('profile-ratio').textContent = ratio !== '--' ? `${ratio}%` : '--';
+    
+    // Update memory breakdown
+    const kSize = kvCacheSize / 2;  // Keys
+    const vSize = kvCacheSize / 2;  // Values
+    const activationsEst = hiddenSize * seqLen * numLayers * 2 * 0.5;  // Rough estimate
+    const totalRuntime = kvCacheSize + modelParamsBytes + activationsEst;
+    
+    document.getElementById('breakdown-k-size').textContent = formatBytes(kSize);
+    document.getElementById('breakdown-k-pct').textContent = 
+        totalRuntime > 0 ? `${(kSize / totalRuntime * 100).toFixed(1)}%` : '--';
+    
+    document.getElementById('breakdown-v-size').textContent = formatBytes(vSize);
+    document.getElementById('breakdown-v-pct').textContent = 
+        totalRuntime > 0 ? `${(vSize / totalRuntime * 100).toFixed(1)}%` : '--';
+    
+    document.getElementById('breakdown-params-size').textContent = formatBytes(modelParamsBytes);
+    document.getElementById('breakdown-params-pct').textContent = 
+        totalRuntime > 0 ? `${(modelParamsBytes / totalRuntime * 100).toFixed(1)}%` : '--';
+    
+    document.getElementById('breakdown-act-size').textContent = formatBytes(activationsEst);
+    document.getElementById('breakdown-act-pct').textContent = 
+        totalRuntime > 0 ? `${(activationsEst / totalRuntime * 100).toFixed(1)}%` : '--';
+    
+    document.getElementById('breakdown-total-size').textContent = formatBytes(totalRuntime);
+    
+    // Render per-layer KV cache visualization
+    renderLayerCacheViz(numLayers, kvPerLayer);
+    
+    // Update context analysis
+    document.getElementById('ctx-max').textContent = maxContext.toLocaleString();
+    document.getElementById('ctx-current').textContent = seqLen.toLocaleString();
+    const utilPct = (seqLen / maxContext * 100).toFixed(1);
+    document.getElementById('ctx-util').textContent = `${utilPct}%`;
+    document.getElementById('ctx-remaining').textContent = (maxContext - seqLen).toLocaleString();
+    
+    // Update context meter
+    document.getElementById('ctx-meter-bar').style.width = `${Math.min(100, utilPct)}%`;
+    document.getElementById('ctx-meter-max').textContent = maxContext.toLocaleString();
+    
+    // Render scaling projections
+    renderScalingProjections(bytesPerToken, modelParamsBytes, seqLen, maxContext);
+    
+    // Update tier sizes and bars (original functionality)
     const tiers = ['gpu_hbm', 'gpu_l2', 'system_ram', 'disk'];
     
     tiers.forEach(tier => {
         const size = profile.memory_usage[tier] || 0;
-        const percentage = totalMemory > 0 ? (size / totalMemory) * 100 : 0;
+        const percentage = totalTierMemory > 0 ? (size / totalTierMemory) * 100 : 0;
         
-        // Update size text
         const sizeEl = document.getElementById(`tier-${tier.replace('_', '-')}-size`);
         if (sizeEl) {
             sizeEl.textContent = formatBytes(size);
         }
         
-        // Update bar
         const barEl = document.getElementById(`tier-${tier.replace('_', '-')}-bar`);
         if (barEl) {
             barEl.style.width = `${percentage}%`;
         }
         
-        // Update blocks
         const blocksEl = document.getElementById(`tier-${tier.replace('_', '-')}-blocks`);
         if (blocksEl) {
             blocksEl.innerHTML = '';
@@ -768,6 +871,63 @@ function renderCacheProfile(profile) {
     
     // Render block map
     renderBlockMap(profile.blocks);
+}
+
+function renderLayerCacheViz(numLayers, sizePerLayer) {
+    const container = document.getElementById('layer-cache-viz');
+    
+    container.innerHTML = `
+        <div class="layer-cache-bars">
+            ${Array.from({length: numLayers}, (_, i) => 
+                `<div class="layer-cache-bar" data-layer="L${i}: ${formatBytes(sizePerLayer)}" style="height: 100%;"></div>`
+            ).join('')}
+        </div>
+        <div class="layer-cache-labels">
+            <span>Layer 0</span>
+            <span>Layer ${numLayers - 1}</span>
+        </div>
+    `;
+}
+
+function renderScalingProjections(bytesPerToken, modelParamsBytes, currentSeqLen, maxContext) {
+    const container = document.getElementById('scaling-rows');
+    
+    const seqLengths = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+        .filter(s => s <= maxContext);
+    
+    container.innerHTML = seqLengths.map(seqLen => {
+        const kvSize = bytesPerToken * seqLen;
+        const total = kvSize + modelParamsBytes;
+        const isCurrent = seqLen === currentSeqLen;
+        
+        return `
+            <div class="scaling-row${isCurrent ? ' current' : ''}">
+                <span class="ctx-len">${formatNumber(seqLen)}</span>
+                <span class="kv-size">${formatBytes(kvSize)}</span>
+                <span class="total-size">${formatBytes(total)}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+function formatNumber(num) {
+    if (num >= 1000000) return (num / 1000000).toFixed(0) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(0) + 'K';
+    return num.toString();
+}
+
+function formatBytesCompact(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const val = bytes / Math.pow(k, i);
+    return val >= 10 ? val.toFixed(0) + ' ' + sizes[i] : val.toFixed(1) + ' ' + sizes[i];
+}
+
+// Old renderCacheProfile for compatibility
+function renderCacheProfile(profile) {
+    renderCacheProfileEnhanced(profile, null, parseInt(document.getElementById('profile-seq-len').value));
 }
 
 function renderBlockMap(blocks) {
@@ -1115,6 +1275,9 @@ async function loadSelectedModel() {
         updateModelStatus('ready', 1.0, 'Model loaded successfully');
         renderLoadedModelInfo(loadedModel);
         updateLoadingUI(false);
+        
+        // Check model type and update playground UI
+        await checkModelType();
         
         // Enable attention test
         document.getElementById('attention-test-btn').disabled = false;
@@ -1899,8 +2062,13 @@ function renderLayerStats(stats) {
 // Playground View
 // ============================================
 
+// Playground state
+const playgroundState = {
+    modelType: 'causal_lm',  // 'causal_lm' or 'diffusion'
+};
+
 function initPlaygroundView() {
-    document.getElementById('playground-generate').addEventListener('click', generateText);
+    document.getElementById('playground-generate').addEventListener('click', handleGenerate);
     document.getElementById('playground-clear').addEventListener('click', clearPlayground);
     
     // Temperature slider
@@ -1916,6 +2084,85 @@ function initPlaygroundView() {
     topPSlider.addEventListener('input', () => {
         topPValue.textContent = (parseInt(topPSlider.value) / 100).toFixed(2);
     });
+    
+    // Image guidance slider
+    const guidanceSlider = document.getElementById('img-guidance');
+    const guidanceValue = document.getElementById('img-guidance-value');
+    if (guidanceSlider && guidanceValue) {
+        guidanceSlider.addEventListener('input', () => {
+            guidanceValue.textContent = (parseInt(guidanceSlider.value) / 10).toFixed(1);
+        });
+    }
+}
+
+async function checkModelType() {
+    try {
+        const response = await fetch(`${API_BASE}/api/models/type`);
+        const data = await response.json();
+        
+        if (data.loaded) {
+            playgroundState.modelType = data.type || 'causal_lm';
+            updatePlaygroundUI(data.is_diffusion);
+        }
+    } catch (error) {
+        console.error('Failed to check model type:', error);
+    }
+}
+
+function updatePlaygroundUI(isDiffusion) {
+    const textConfig = document.getElementById('text-gen-config');
+    const imageConfig = document.getElementById('image-gen-config');
+    const textTips = document.getElementById('text-gen-tips');
+    const imageTips = document.getElementById('image-gen-tips');
+    const textOutput = document.getElementById('playground-output');
+    const imageOutput = document.getElementById('playground-image-output');
+    const negativePrompt = document.getElementById('negative-prompt-group');
+    const subtitle = document.getElementById('playground-subtitle');
+    const indicator = document.getElementById('model-type-indicator');
+    const promptLabel = document.getElementById('playground-prompt-label');
+    const outputHeader = document.getElementById('output-header-text');
+    const promptTextarea = document.getElementById('playground-prompt');
+    
+    if (isDiffusion) {
+        // Show image generation UI
+        textConfig.style.display = 'none';
+        imageConfig.style.display = 'block';
+        textTips.style.display = 'none';
+        imageTips.style.display = 'block';
+        textOutput.style.display = 'none';
+        imageOutput.style.display = 'flex';
+        negativePrompt.style.display = 'block';
+        subtitle.textContent = 'Generate images with Stable Diffusion';
+        indicator.style.display = 'block';
+        indicator.innerHTML = '<span class="type-badge diffusion-model">Diffusion Model</span>';
+        promptLabel.textContent = 'Image Prompt';
+        outputHeader.textContent = 'Generated Image';
+        promptTextarea.placeholder = 'A majestic mountain landscape at sunset, highly detailed, 8k...';
+        promptTextarea.value = 'A beautiful sunset over mountains, highly detailed, digital art';
+    } else {
+        // Show text generation UI
+        textConfig.style.display = 'block';
+        imageConfig.style.display = 'none';
+        textTips.style.display = 'block';
+        imageTips.style.display = 'none';
+        textOutput.style.display = 'block';
+        imageOutput.style.display = 'none';
+        negativePrompt.style.display = 'none';
+        subtitle.textContent = 'Generate text and explore model outputs';
+        indicator.style.display = 'block';
+        indicator.innerHTML = '<span class="type-badge text-model">Text Model</span>';
+        promptLabel.textContent = 'Prompt';
+        outputHeader.textContent = 'Generated Output';
+        promptTextarea.placeholder = 'Enter your prompt here...';
+    }
+}
+
+async function handleGenerate() {
+    if (playgroundState.modelType === 'diffusion') {
+        await generateImage();
+    } else {
+        await generateText();
+    }
 }
 
 async function generateText() {
@@ -1993,11 +2240,107 @@ async function generateText() {
     }
 }
 
+async function generateImage() {
+    const prompt = document.getElementById('playground-prompt').value.trim();
+    if (!prompt) {
+        alert('Please enter a prompt');
+        return;
+    }
+    
+    const negativePrompt = document.getElementById('playground-negative-prompt')?.value.trim() || '';
+    const imageOutput = document.getElementById('playground-image-output');
+    const statsContainer = document.getElementById('generation-stats');
+    
+    // Show loading
+    imageOutput.innerHTML = `
+        <div class="image-loading">
+            <div class="spinner"></div>
+            <span class="progress-text">Generating image...</span>
+        </div>
+    `;
+    statsContainer.innerHTML = '';
+    
+    // Get generation settings
+    const steps = parseInt(document.getElementById('img-steps')?.value) || 20;
+    const guidance = parseInt(document.getElementById('img-guidance')?.value) / 10 || 7.5;
+    const width = parseInt(document.getElementById('img-width')?.value) || 512;
+    const height = parseInt(document.getElementById('img-height')?.value) || 512;
+    const seedInput = document.getElementById('img-seed')?.value;
+    const seed = seedInput ? parseInt(seedInput) : null;
+    
+    const startTime = Date.now();
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/models/generate-image`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt,
+                negative_prompt: negativePrompt,
+                num_inference_steps: steps,
+                guidance_scale: guidance,
+                width,
+                height,
+                seed,
+            })
+        });
+        
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error);
+        }
+        
+        const result = await response.json();
+        const elapsed = Date.now() - startTime;
+        
+        // Display image
+        imageOutput.innerHTML = `
+            <div class="image-container">
+                <img id="generated-image" src="data:image/png;base64,${result.image}" alt="Generated image">
+            </div>
+        `;
+        
+        // Show stats
+        statsContainer.innerHTML = `
+            <span><span class="stat-label">Size:</span> ${result.width}×${result.height}</span>
+            <span><span class="stat-label">Steps:</span> ${result.steps}</span>
+            <span><span class="stat-label">Time:</span> ${(elapsed / 1000).toFixed(1)}s</span>
+        `;
+        
+    } catch (error) {
+        console.error('Image generation error:', error);
+        imageOutput.innerHTML = `
+            <div class="image-container">
+                <p class="image-placeholder" style="color: var(--sink-color);">
+                    Error: ${error.message}
+                </p>
+            </div>
+        `;
+    }
+}
+
 function clearPlayground() {
     document.getElementById('playground-prompt').value = '';
+    
+    // Clear text output
     document.getElementById('playground-output').innerHTML = `
-        <p class="output-placeholder">Generated text will appear here...</p>
+        <p class="output-placeholder">Generated content will appear here...</p>
     `;
+    
+    // Clear image output
+    const imageOutput = document.getElementById('playground-image-output');
+    if (imageOutput) {
+        imageOutput.innerHTML = `
+            <div class="image-container">
+                <p class="image-placeholder">Generated image will appear here...</p>
+            </div>
+        `;
+    }
+    
+    // Clear negative prompt
+    const negPrompt = document.getElementById('playground-negative-prompt');
+    if (negPrompt) negPrompt.value = '';
+    
     document.getElementById('generation-stats').innerHTML = '';
 }
 

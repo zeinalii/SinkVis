@@ -193,7 +193,7 @@ class H2OEviction(EvictionStrategy):
             return None
         
         # Find entry with lowest importance that isn't protected
-        candidates = [
+        candidates = [ 
             (pos, entry) for pos, entry in self.cache.items()
             if not entry.is_sink and not entry.is_heavy_hitter
         ]

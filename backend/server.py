@@ -10,6 +10,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .models import (
     PromptRequest,
@@ -34,6 +35,7 @@ from .hf_loader import (
     LoadProgress,
     LoadedModel,
     ModelStatus,
+    ModelType,
     TokenInfo,
     get_token_info,
 )
@@ -185,15 +187,37 @@ async def compare_policies(request: PromptRequest):
 @app.get("/api/cache-profile")
 async def get_cache_profile(
     seq_len: int = 512,
+    prompt: Optional[str] = None,
     policy: EvictionPolicy = EvictionPolicy.STREAMING_LLM,
 ):
-    """Get a sample cache profile for visualization."""
-    attention = generate_attention_pattern(seq_len)
+    """Get a sample cache profile for visualization.
+    
+    If a prompt is provided and a model is loaded, uses actual tokenization.
+    Otherwise, uses the seq_len parameter for simulation.
+    """
+    actual_seq_len = seq_len
+    tokens = None
+    loader = get_loader()
+    
+    # If prompt provided and model is loaded, use real tokenization
+    if prompt and loader.tokenizer is not None:
+        try:
+            encoded = loader.tokenizer(prompt, return_tensors="pt")
+            actual_seq_len = encoded.input_ids.shape[1]
+            tokens = loader.tokenizer.convert_ids_to_tokens(encoded.input_ids[0])
+        except Exception:
+            # Fall back to seq_len if tokenization fails
+            pass
+    elif prompt:
+        # Rough estimate if no tokenizer available: ~4 chars per token
+        actual_seq_len = max(1, len(prompt) // 4 + 1)
+    
+    attention = generate_attention_pattern(actual_seq_len)
     sinks = identify_sinks(attention)
     heavy_hitters = identify_heavy_hitters(attention, exclude_sinks=sinks)
     
     blocks = generate_cache_blocks(
-        seq_len=seq_len,
+        seq_len=actual_seq_len,
         sink_indices=sinks,
         heavy_hitter_indices=heavy_hitters,
         base_timestamp=time.time(),
@@ -205,7 +229,7 @@ async def get_cache_profile(
         memory_usage[block.memory_tier.value] += block.size_bytes
     
     return CacheProfile(
-        total_tokens=seq_len,
+        total_tokens=actual_seq_len,
         blocks=blocks,
         memory_usage=memory_usage,
         eviction_policy=policy,
@@ -344,6 +368,10 @@ async def get_model_architecture() -> ModelArchitecture:
     if not loader.is_model_loaded():
         raise ValueError("No model loaded. Please load a model first.")
     
+    # Check if it's a diffusion model - architecture view not supported
+    if loader.is_diffusion_model():
+        raise ValueError("Architecture view is not available for diffusion models. Use the Playground tab to generate images.")
+    
     if loader.model is None or loader.tokenizer is None or loader.model_id is None:
         raise ValueError("Model not properly loaded. Please reload the model.")
     
@@ -375,6 +403,9 @@ async def get_layer_analysis(request: LayerAnalysisRequest) -> PerLayerAnalysis:
     
     if not loader.is_model_loaded():
         raise ValueError("No model loaded. Please load a model first.")
+    
+    if loader.is_diffusion_model():
+        raise ValueError("Layer analysis is not available for diffusion models.")
     
     if loader.model is None or loader.tokenizer is None:
         raise ValueError("Model not properly loaded. Please reload the model.")
@@ -576,6 +607,73 @@ async def generate_text(request: GenerateRequest):
         return result
     except Exception as e:
         raise ValueError(f"Failed to generate text: {e}")
+
+
+# ============================================
+# Image Generation Endpoints (Diffusion Models)
+# ============================================
+
+class ImageGenerateRequest(BaseModel):
+    """Request for image generation."""
+    prompt: str
+    negative_prompt: str = ""
+    num_inference_steps: int = 20
+    guidance_scale: float = 7.5
+    width: int = 512
+    height: int = 512
+    seed: Optional[int] = None
+
+
+@app.post("/api/models/generate-image")
+async def generate_image(request: ImageGenerateRequest):
+    """Generate an image using the loaded diffusion model."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        raise ValueError("No model loaded. Please load a model first.")
+    
+    if not loader.is_diffusion_model():
+        raise ValueError("Loaded model is not a diffusion model. Load a Stable Diffusion model to generate images.")
+    
+    try:
+        def run_generation():
+            return loader.generate_image(
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                num_inference_steps=request.num_inference_steps,
+                guidance_scale=request.guidance_scale,
+                width=request.width,
+                height=request.height,
+                seed=request.seed,
+            )
+        
+        image_base64 = await asyncio.get_event_loop().run_in_executor(None, run_generation)
+        
+        return {
+            "image": image_base64,
+            "prompt": request.prompt,
+            "width": request.width,
+            "height": request.height,
+            "steps": request.num_inference_steps,
+        }
+    except Exception as e:
+        raise ValueError(f"Failed to generate image: {e}")
+
+
+@app.get("/api/models/type")
+async def get_model_type():
+    """Get the type of the currently loaded model."""
+    loader = get_loader()
+    
+    if not loader.is_model_loaded():
+        return {"type": None, "loaded": False}
+    
+    return {
+        "type": loader.model_type.value,
+        "loaded": True,
+        "model_id": loader.model_id,
+        "is_diffusion": loader.is_diffusion_model(),
+    }
 
 
 @app.websocket("/ws/attention")

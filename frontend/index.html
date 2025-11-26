@@ -477,84 +477,225 @@
                     <h2>Hierarchical Cache Profile</h2>
                     <div class="controls">
                         <button id="profile-refresh" class="btn btn-primary">
-                            <span class="icon">↻</span> Refresh
+                            <span class="icon">↻</span> Analyze
                         </button>
-                        <div class="input-group inline">
+                    </div>
+                </div>
+
+                <div class="profile-prompt-bar">
+                    <div class="prompt-input-row">
+                        <div class="input-group flex-grow">
+                            <label>Prompt (or leave empty for sequence length simulation)</label>
+                            <textarea id="profile-prompt" placeholder="Enter a prompt to analyze its cache memory requirements..." rows="2"></textarea>
+                        </div>
+                        <div class="input-group seq-len-input">
                             <label>Sequence Length</label>
-                            <input type="number" id="profile-seq-len" value="512" min="64" max="4096">
+                            <input type="number" id="profile-seq-len" value="512" min="64" max="131072">
+                            <span class="input-hint">Used when no prompt</span>
                         </div>
                     </div>
                 </div>
 
-                <div class="profile-layout">
-                    <div class="memory-hierarchy">
-                        <h3>Memory Hierarchy</h3>
-                        <div class="memory-tiers">
-                            <div class="memory-tier" data-tier="gpu_hbm">
-                                <div class="tier-header">
-                                    <span class="tier-icon gpu">▮</span>
-                                    <span class="tier-name">GPU HBM</span>
-                                    <span class="tier-size" id="tier-gpu-hbm-size">0 KB</span>
-                                </div>
-                                <div class="tier-bar">
-                                    <div class="tier-fill" id="tier-gpu-hbm-bar"></div>
-                                </div>
-                                <div class="tier-blocks" id="tier-gpu-hbm-blocks"></div>
+                <div class="profile-layout-enhanced">
+                    <!-- Top Summary Cards -->
+                    <div class="profile-summary-row">
+                        <div class="profile-metric-card primary">
+                            <div class="metric-icon">⬢</div>
+                            <div class="metric-content">
+                                <div class="metric-value" id="profile-total-kv">--</div>
+                                <div class="metric-label">Total KV Cache</div>
+                                <div class="metric-detail" id="profile-total-kv-detail">at current sequence length</div>
                             </div>
-                            <div class="memory-tier" data-tier="gpu_l2">
-                                <div class="tier-header">
-                                    <span class="tier-icon cache">▮</span>
-                                    <span class="tier-name">GPU L2 Cache</span>
-                                    <span class="tier-size" id="tier-gpu-l2-size">0 KB</span>
-                                </div>
-                                <div class="tier-bar">
-                                    <div class="tier-fill" id="tier-gpu-l2-bar"></div>
-                                </div>
-                                <div class="tier-blocks" id="tier-gpu-l2-blocks"></div>
+                        </div>
+                        <div class="profile-metric-card">
+                            <div class="metric-icon">◈</div>
+                            <div class="metric-content">
+                                <div class="metric-value" id="profile-per-token">--</div>
+                                <div class="metric-label">Per Token</div>
+                                <div class="metric-detail">K + V cache bytes</div>
                             </div>
-                            <div class="memory-tier" data-tier="system_ram">
-                                <div class="tier-header">
-                                    <span class="tier-icon ram">▮</span>
-                                    <span class="tier-name">System RAM</span>
-                                    <span class="tier-size" id="tier-system-ram-size">0 KB</span>
-                                </div>
-                                <div class="tier-bar">
-                                    <div class="tier-fill" id="tier-system-ram-bar"></div>
-                                </div>
-                                <div class="tier-blocks" id="tier-system-ram-blocks"></div>
+                        </div>
+                        <div class="profile-metric-card">
+                            <div class="metric-icon">▣</div>
+                            <div class="metric-content">
+                                <div class="metric-value" id="profile-per-layer">--</div>
+                                <div class="metric-label">Per Layer</div>
+                                <div class="metric-detail" id="profile-per-layer-detail">KV cache size</div>
                             </div>
-                            <div class="memory-tier" data-tier="disk">
-                                <div class="tier-header">
-                                    <span class="tier-icon disk">▮</span>
-                                    <span class="tier-name">Disk / Offloaded</span>
-                                    <span class="tier-size" id="tier-disk-size">0 KB</span>
-                                </div>
-                                <div class="tier-bar">
-                                    <div class="tier-fill" id="tier-disk-bar"></div>
-                                </div>
-                                <div class="tier-blocks" id="tier-disk-blocks"></div>
+                        </div>
+                        <div class="profile-metric-card">
+                            <div class="metric-icon">◎</div>
+                            <div class="metric-content">
+                                <div class="metric-value" id="profile-model-mem">--</div>
+                                <div class="metric-label">Model Params</div>
+                                <div class="metric-detail" id="profile-model-mem-detail">loaded in memory</div>
+                            </div>
+                        </div>
+                        <div class="profile-metric-card highlight">
+                            <div class="metric-icon">⚡</div>
+                            <div class="metric-content">
+                                <div class="metric-value" id="profile-ratio">--</div>
+                                <div class="metric-label">Cache/Model</div>
+                                <div class="metric-detail">memory ratio</div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="cache-blocks-view">
-                        <h3>Cache Block Map</h3>
-                        <div id="block-map" class="block-map">
-                            <div class="block-map-placeholder">
-                                <p>Click Refresh to load cache profile</p>
+                    <!-- Main Content Grid -->
+                    <div class="profile-main-grid">
+                        <!-- Left: Memory Breakdown -->
+                        <div class="profile-section">
+                            <h3>Memory Breakdown</h3>
+                            <div class="memory-breakdown-table">
+                                <div class="breakdown-header">
+                                    <span>Component</span>
+                                    <span>Size</span>
+                                    <span>% of Total</span>
+                                </div>
+                                <div id="memory-breakdown-rows">
+                                    <div class="breakdown-row">
+                                        <span class="component-name"><span class="dot kv"></span> KV Cache (Keys)</span>
+                                        <span class="component-size" id="breakdown-k-size">--</span>
+                                        <span class="component-pct" id="breakdown-k-pct">--</span>
+                                    </div>
+                                    <div class="breakdown-row">
+                                        <span class="component-name"><span class="dot kv"></span> KV Cache (Values)</span>
+                                        <span class="component-size" id="breakdown-v-size">--</span>
+                                        <span class="component-pct" id="breakdown-v-pct">--</span>
+                                    </div>
+                                    <div class="breakdown-row">
+                                        <span class="component-name"><span class="dot model"></span> Model Parameters</span>
+                                        <span class="component-size" id="breakdown-params-size">--</span>
+                                        <span class="component-pct" id="breakdown-params-pct">--</span>
+                                    </div>
+                                    <div class="breakdown-row">
+                                        <span class="component-name"><span class="dot activations"></span> Activations (est.)</span>
+                                        <span class="component-size" id="breakdown-act-size">--</span>
+                                        <span class="component-pct" id="breakdown-act-pct">--</span>
+                                    </div>
+                                    <div class="breakdown-row total">
+                                        <span class="component-name">Total Runtime Memory</span>
+                                        <span class="component-size" id="breakdown-total-size">--</span>
+                                        <span class="component-pct">100%</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <h3>Per-Layer KV Cache</h3>
+                            <div class="layer-cache-viz" id="layer-cache-viz">
+                                <p class="info-placeholder">Load model to see per-layer breakdown</p>
                             </div>
                         </div>
-                        <div class="block-legend">
-                            <span class="legend-item sink">◆ Contains Sink</span>
-                            <span class="legend-item heavy">◆ Contains Heavy Hitter</span>
-                            <span class="legend-item normal">◆ Normal Block</span>
-                        </div>
-                    </div>
 
-                    <div class="block-details">
-                        <h3>Block Details</h3>
-                        <div id="block-info" class="block-info">
-                            <p class="info-placeholder">Hover over a block to see details</p>
+                        <!-- Center: Memory Hierarchy & Block Map -->
+                        <div class="profile-section wide">
+                            <h3>Memory Hierarchy</h3>
+                            <div class="memory-tiers compact">
+                                <div class="memory-tier" data-tier="gpu_hbm">
+                                    <div class="tier-header">
+                                        <span class="tier-icon gpu">▮</span>
+                                        <span class="tier-name">GPU HBM</span>
+                                        <span class="tier-size" id="tier-gpu-hbm-size">0 KB</span>
+                                    </div>
+                                    <div class="tier-bar">
+                                        <div class="tier-fill" id="tier-gpu-hbm-bar"></div>
+                                    </div>
+                                    <div class="tier-blocks" id="tier-gpu-hbm-blocks"></div>
+                                </div>
+                                <div class="memory-tier" data-tier="gpu_l2">
+                                    <div class="tier-header">
+                                        <span class="tier-icon cache">▮</span>
+                                        <span class="tier-name">GPU L2 Cache</span>
+                                        <span class="tier-size" id="tier-gpu-l2-size">0 KB</span>
+                                    </div>
+                                    <div class="tier-bar">
+                                        <div class="tier-fill" id="tier-gpu-l2-bar"></div>
+                                    </div>
+                                    <div class="tier-blocks" id="tier-gpu-l2-blocks"></div>
+                                </div>
+                                <div class="memory-tier" data-tier="system_ram">
+                                    <div class="tier-header">
+                                        <span class="tier-icon ram">▮</span>
+                                        <span class="tier-name">System RAM</span>
+                                        <span class="tier-size" id="tier-system-ram-size">0 KB</span>
+                                    </div>
+                                    <div class="tier-bar">
+                                        <div class="tier-fill" id="tier-system-ram-bar"></div>
+                                    </div>
+                                    <div class="tier-blocks" id="tier-system-ram-blocks"></div>
+                                </div>
+                                <div class="memory-tier" data-tier="disk">
+                                    <div class="tier-header">
+                                        <span class="tier-icon disk">▮</span>
+                                        <span class="tier-name">Disk / Offloaded</span>
+                                        <span class="tier-size" id="tier-disk-size">0 KB</span>
+                                    </div>
+                                    <div class="tier-bar">
+                                        <div class="tier-fill" id="tier-disk-bar"></div>
+                                    </div>
+                                    <div class="tier-blocks" id="tier-disk-blocks"></div>
+                                </div>
+                            </div>
+
+                            <h3>Cache Block Map</h3>
+                            <div id="block-map" class="block-map">
+                                <div class="block-map-placeholder">
+                                    <p>Click Refresh to load cache profile</p>
+                                </div>
+                            </div>
+                            <div class="block-legend">
+                                <span class="legend-item sink">◆ Sink Tokens</span>
+                                <span class="legend-item heavy">◆ Heavy Hitters</span>
+                                <span class="legend-item normal">◆ Normal</span>
+                            </div>
+                        </div>
+
+                        <!-- Right: Context Analysis & Details -->
+                        <div class="profile-section">
+                            <h3>Context Window Analysis</h3>
+                            <div class="context-analysis">
+                                <div class="context-row">
+                                    <span class="context-label">Max Context</span>
+                                    <span class="context-value" id="ctx-max">--</span>
+                                </div>
+                                <div class="context-row">
+                                    <span class="context-label">Current Tokens</span>
+                                    <span class="context-value" id="ctx-current">--</span>
+                                </div>
+                                <div class="context-row">
+                                    <span class="context-label">Utilization</span>
+                                    <span class="context-value" id="ctx-util">--</span>
+                                </div>
+                                <div class="context-row">
+                                    <span class="context-label">Remaining Capacity</span>
+                                    <span class="context-value" id="ctx-remaining">--</span>
+                                </div>
+                            </div>
+                            
+                            <div class="context-meter">
+                                <div class="meter-bar" id="ctx-meter-bar"></div>
+                                <div class="meter-labels">
+                                    <span>0</span>
+                                    <span id="ctx-meter-max">--</span>
+                                </div>
+                            </div>
+
+                            <h3>Scaling Projections</h3>
+                            <div class="scaling-table" id="scaling-table">
+                                <div class="scaling-header">
+                                    <span>Context</span>
+                                    <span>KV Cache</span>
+                                    <span>Total</span>
+                                </div>
+                                <div class="scaling-rows" id="scaling-rows">
+                                    <!-- Filled by JS -->
+                                </div>
+                            </div>
+
+                            <h3>Block Details</h3>
+                            <div id="block-info" class="block-info">
+                                <p class="info-placeholder">Hover over a block to see details</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -566,21 +707,29 @@
                     <div class="overlay-content">
                         <div class="overlay-icon">▷</div>
                         <h3>Model Required</h3>
-                        <p>Load a model from the Model Hub to generate text</p>
+                        <p>Load a model from the Model Hub to generate text or images</p>
                         <button class="btn btn-primary goto-modelhub-btn">Go to Model Hub</button>
                     </div>
                 </div>
                 <div class="view-header">
                     <h2>Playground</h2>
-                    <p class="view-subtitle">Generate text and explore model outputs</p>
+                    <p class="view-subtitle" id="playground-subtitle">Generate text and explore model outputs</p>
+                    <div class="model-type-indicator" id="model-type-indicator" style="display: none;">
+                        <span class="type-badge text-model">Text Model</span>
+                    </div>
                 </div>
 
                 <div class="playground-layout">
                     <div class="playground-main">
                         <div class="playground-input-section">
                             <div class="input-group">
-                                <label>Prompt</label>
+                                <label id="playground-prompt-label">Prompt</label>
                                 <textarea id="playground-prompt" placeholder="Enter your prompt here..." rows="4">Once upon a time in a land far away,</textarea>
+                            </div>
+                            <!-- Negative prompt for diffusion models -->
+                            <div class="input-group" id="negative-prompt-group" style="display: none;">
+                                <label>Negative Prompt (what to avoid)</label>
+                                <textarea id="playground-negative-prompt" placeholder="blurry, low quality, distorted..." rows="2"></textarea>
                             </div>
                             <div class="playground-controls">
                                 <button id="playground-generate" class="btn btn-primary">
@@ -594,18 +743,26 @@
 
                         <div class="playground-output-section">
                             <div class="output-header">
-                                <h3>Generated Output</h3>
+                                <h3 id="output-header-text">Generated Output</h3>
                                 <div id="generation-stats" class="generation-stats"></div>
                             </div>
+                            <!-- Text output -->
                             <div id="playground-output" class="playground-output">
-                                <p class="output-placeholder">Generated text will appear here...</p>
+                                <p class="output-placeholder">Generated content will appear here...</p>
+                            </div>
+                            <!-- Image output (hidden by default) -->
+                            <div id="playground-image-output" class="playground-image-output" style="display: none;">
+                                <div class="image-container">
+                                    <img id="generated-image" src="" alt="Generated image">
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="playground-sidebar">
-                        <div class="generation-config">
-                            <h3>Generation Settings</h3>
+                        <!-- Text generation settings -->
+                        <div class="generation-config" id="text-gen-config">
+                            <h3>Text Generation Settings</h3>
                             
                             <div class="config-group">
                                 <label>Max New Tokens</label>
@@ -638,12 +795,70 @@
                             </div>
                         </div>
 
-                        <div class="generation-tips">
+                        <!-- Image generation settings (hidden by default) -->
+                        <div class="generation-config" id="image-gen-config" style="display: none;">
+                            <h3>Image Generation Settings</h3>
+                            
+                            <div class="config-group">
+                                <label>Inference Steps</label>
+                                <input type="number" id="img-steps" value="20" min="1" max="100">
+                                <p class="config-hint">More steps = better quality but slower</p>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label>Guidance Scale (CFG)</label>
+                                <input type="range" id="img-guidance" min="10" max="200" value="75">
+                                <span id="img-guidance-value">7.5</span>
+                                <p class="config-hint">How closely to follow the prompt</p>
+                            </div>
+                            
+                            <div class="config-row-sm">
+                                <div class="input-group">
+                                    <label>Width</label>
+                                    <select id="img-width">
+                                        <option value="256">256</option>
+                                        <option value="384">384</option>
+                                        <option value="512" selected>512</option>
+                                        <option value="640">640</option>
+                                        <option value="768">768</option>
+                                        <option value="1024">1024</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <label>Height</label>
+                                    <select id="img-height">
+                                        <option value="256">256</option>
+                                        <option value="384">384</option>
+                                        <option value="512" selected>512</option>
+                                        <option value="640">640</option>
+                                        <option value="768">768</option>
+                                        <option value="1024">1024</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label>Seed (optional)</label>
+                                <input type="number" id="img-seed" placeholder="Random" min="0">
+                                <p class="config-hint">Set for reproducible results</p>
+                            </div>
+                        </div>
+
+                        <div class="generation-tips" id="text-gen-tips">
                             <h3>Tips</h3>
                             <ul>
                                 <li><strong>Temperature:</strong> Higher = more creative, lower = more focused</li>
                                 <li><strong>Top-P:</strong> Limits to tokens with cumulative probability</li>
                                 <li><strong>Top-K:</strong> Limits to top K most likely tokens</li>
+                            </ul>
+                        </div>
+
+                        <div class="generation-tips" id="image-gen-tips" style="display: none;">
+                            <h3>Tips</h3>
+                            <ul>
+                                <li><strong>Steps:</strong> 20-30 is usually good balance of speed/quality</li>
+                                <li><strong>CFG:</strong> 7-9 for realistic, 10-15 for stylized</li>
+                                <li><strong>Negative:</strong> Add "blurry, low quality" to avoid artifacts</li>
                             </ul>
                         </div>
                     </div>
