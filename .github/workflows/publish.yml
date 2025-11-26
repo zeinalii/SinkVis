@@ -41,6 +41,7 @@ jobs:
         run: uv pip install black==24.10.0 flake8==4.0.1
 
       - name: Install build dependencies
+        working-directory: ./sinkvis
         run: uv pip install build twine
 
       - name: Run tests
